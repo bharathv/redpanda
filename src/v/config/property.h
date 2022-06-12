@@ -16,6 +16,7 @@
 #include "json/writer.h"
 #include "oncore.h"
 #include "reflection/type_traits.h"
+#include "tristate.h"
 #include "utils/intrusive_list_helpers.h"
 #include "utils/to_string.h"
 
@@ -329,7 +330,7 @@ public:
         _on_change = std::move(f);
     }
 
-    const T& operator()() const {
+    virtual const T& operator()() const {
         oncore_debug_verify(_verify_shard);
         return _value;
     }
@@ -339,6 +340,64 @@ public:
     template<typename U>
     friend inline binding<U> mock_binding(U&&);
 };
+
+/**
+ * @brief Defines a property with an optional override. This is useful for
+ * defining topic specific overrides that are still bound to a cluster level
+ * property. If no override is present, returns the underlying bound property.
+ *
+ * @tparam T Property type
+ */
+template<class T>
+class property_with_override: public binding<T> {
+public:
+    property_with_override(
+      property<T>& base, std::optional<T>&& override = std::nullopt)
+      : binding<T>(base)
+      , _override(override) {}
+
+    void set_override(std::optional<T> new_override) {
+        _override = new_override;
+    }
+
+    const T& operator()() const override {
+        if (_override.has_value()) {
+            return _override.value();
+        }
+        return binding<T>::operator()();
+    }
+
+private:
+    std::optional<T> _override;
+};
+
+/**
+ * @brief Optional configurations (represented as tristate) are a bit special from
+ * regular configurations, hence a specialization.
+ */
+template<class T>
+class property_with_override<tristate<T>>: public binding<std::optional<T>> {
+public:
+    property_with_override(property<std::optional<T>>& base,
+    std::optional<std::optional<T>>&& override = {std::nullopt})
+      : binding<std::optional<T>>(base)
+      , _override(override) {}
+
+    void set_override(std::optional<T> new_override) {
+        _override = std::optional(new_override);
+    }
+
+    const std::optional<T>& operator()() const override {
+        if (_override.has_value() && _override.value().has_value()) {
+            return _override.value();
+        }
+        return binding<std::optional<T>>::operator()();
+    }
+
+private:
+    std::optional<std::optional<T>> _override;
+};
+
 
 /**
  * Test helper.  Construct a property binding with no underlying

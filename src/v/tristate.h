@@ -53,6 +53,10 @@ public:
     constexpr T& value() { return get_optional().value(); }
     constexpr const T& value() const { return get_optional().value(); }
 
+    constexpr void operator=(std::optional<T>&& val) {
+        _value = std::move(val);
+    }
+
     friend constexpr bool
     operator==(const tristate<T>& lhs, const tristate<T>& rhs) {
         return lhs._value == rhs._value;

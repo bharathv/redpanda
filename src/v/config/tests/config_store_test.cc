@@ -11,6 +11,7 @@
 #include "json/document.h"
 #include "json/stringbuffer.h"
 #include "json/writer.h"
+#include "tristate.h"
 
 #include <seastar/core/thread.hh>
 #include <seastar/testing/thread_test_case.hh>
@@ -415,4 +416,24 @@ SEASTAR_THREAD_TEST_CASE(property_bind) {
     BOOST_TEST(bind2() == "newvalue3");
     BOOST_TEST(bind3() == "newvalue3");
     BOOST_TEST(watch_count == 4);
+}
+
+SEASTAR_THREAD_TEST_CASE(property_with_override) {
+    // TODO(bharathv): Add more meaningful test cases.
+    auto cfg = test_config();
+    config::property_with_override<int64_t> prop(cfg.an_int64_t);
+    BOOST_TEST(prop() == cfg.an_int64_t());
+    // Add an override.
+    int64_t new_value = 10;
+    prop.set_override(std::optional<int64_t>(new_value));
+    BOOST_TEST(prop() == new_value);
+    // unset the override, should fall back to the bind config.
+    prop.set_override(std::nullopt);
+    BOOST_TEST(prop() == cfg.an_int64_t());
+
+    config::property_with_override<tristate<std::chrono::seconds>> ts_prop(cfg.optional_seconds);
+    BOOST_TEST(ts_prop() == std::nullopt);
+    auto new_ts = std::optional<std::chrono::seconds>(10);
+    ts_prop.set_override(new_ts);
+    BOOST_TEST(ts_prop() == new_ts);
 }
