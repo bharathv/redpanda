@@ -82,7 +82,7 @@ private:
     ss::future<> reconcile_ntp(deltas_t&);
 
     ss::future<std::error_code>
-    execute_partitition_op(const topic_table::delta&);
+    execute_partition_op(const topic_table::delta&);
 
     ss::future<std::error_code> process_partition_update(
       model::ntp,

@@ -433,26 +433,26 @@ ss::future<> controller_backend::reconcile_ntp(deltas_t& deltas) {
     bool stop = false;
     auto it = deltas.begin();
     while (!(stop || it == deltas.end())) {
-        // start_topics_reconcilation_loop will catch this during shutdown
+        // start_topics_reconciliation_loop will catch this during shutdown
         _as.local().check();
 
         if (has_non_replicable_op_type(*it)) {
             /// This if statement has nothing to do with correctness and is only
-            /// here to reduce the amount of uncessecary logging emitted by the
+            /// here to reduce the amount of unnecessary logging emitted by the
             /// controller_backend for events that it eventually will not handle
             /// anyway.
             ++it;
             continue;
         }
         try {
-            auto ec = co_await execute_partitition_op(*it);
+            auto ec = co_await execute_partition_op(*it);
             if (ec) {
                 if (it->type == topic_table_delta::op_type::update) {
                     /**
                      * do not skip cross core partition updates waiting for
                      * partition to be shut down on the other core
                      */
-                    if (ec == errc::wating_for_partition_shutdown) {
+                    if (ec == errc::waiting_for_partition_shutdown) {
                         continue;
                     }
                     /**
@@ -586,7 +586,7 @@ std::optional<ss::shard_id> get_target_shard(
 }
 
 ss::future<std::error_code>
-controller_backend::execute_partitition_op(const topic_table::delta& delta) {
+controller_backend::execute_partition_op(const topic_table::delta& delta) {
     using op_t = topic_table::delta::op_type;
     /**
      * Revision is derived from delta offset, i.e. offset of a command that
@@ -830,7 +830,7 @@ ss::future<std::error_code> controller_backend::process_partition_update(
             auto x_core_move_req = co_await ask_remote_shard_for_initail_rev(
               ntp, *previous_shard);
             if (!x_core_move_req) {
-                co_return errc::wating_for_partition_shutdown;
+                co_return errc::waiting_for_partition_shutdown;
             }
             initial_revision = x_core_move_req->revision;
             std::copy(
