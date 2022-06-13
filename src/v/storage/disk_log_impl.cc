@@ -79,6 +79,12 @@ disk_log_impl::~disk_log_impl() {
     vassert(_closed, "log segment must be closed before deleting:{}", *this);
 }
 
+ss::future<> disk_log_impl::recompute_max_segment_size() {
+    _max_segment_size = internal::jitter_segment_size(
+      std::min(max_segment_size(), segment_size_hard_limit));
+    return ss::make_ready_future<>();
+}
+
 ss::future<> disk_log_impl::remove() {
     vassert(!_closed, "Invalid double closing of log - {}", *this);
     _closed = true;
@@ -683,26 +689,28 @@ ss::future<> disk_log_impl::new_segment(
   model::offset o, model::term_id t, ss::io_priority_class pc) {
     vassert(
       o() >= 0 && t() >= 0, "offset:{} and term:{} must be initialized", o, t);
-    return _manager
-      .make_log_segment(
-        config(),
-        o,
-        t,
-        pc,
-        config::shard_local_cfg().storage_read_buffer_size(),
-        config::shard_local_cfg().storage_read_readahead_count())
-      .then([this](ss::lw_shared_ptr<segment> handles) mutable {
-          return remove_empty_segments().then(
-            [this, h = std::move(handles)]() mutable {
-                vassert(!_closed, "cannot add log segment to closed log");
-                if (config().is_compacted()) {
-                    h->mark_as_compacted_segment();
-                }
-                _segs.add(std::move(h));
-                _probe.segment_created();
-                _stm_manager->make_snapshot_in_background();
-            });
-      });
+    return recompute_max_segment_size().then([this, o, t, pc]() mutable {
+        return _manager
+          .make_log_segment(
+            config(),
+            o,
+            t,
+            pc,
+            config::shard_local_cfg().storage_read_buffer_size(),
+            config::shard_local_cfg().storage_read_readahead_count())
+          .then([this](ss::lw_shared_ptr<segment> handles) mutable {
+              return remove_empty_segments().then(
+                [this, h = std::move(handles)]() mutable {
+                    vassert(!_closed, "cannot add log segment to closed log");
+                    if (config().is_compacted()) {
+                        h->mark_as_compacted_segment();
+                    }
+                    _segs.add(std::move(h));
+                    _probe.segment_created();
+                    _stm_manager->make_snapshot_in_background();
+                });
+          });
+    });
 }
 
 // config timeout is for the one calling reader consumer
@@ -1182,25 +1190,21 @@ ss::future<>
 disk_log_impl::update_configuration(ntp_config::default_overrides o) {
     auto was_compacted = config().is_compacted();
     mutable_config().set_overrides(o);
+
     /**
      * For most of the settings we always query ntp config, only cleanup_policy
-     * and segment size need special treatment.
+     * needs special treatment.
      */
-    if (config().has_overrides()) {
-        if (config().get_overrides().segment_size) {
-            _max_segment_size = *config().get_overrides().segment_size;
+    // enable compaction
+    if (!was_compacted && config().is_compacted()) {
+        for (auto& s : _segs) {
+            s->mark_as_compacted_segment();
         }
-        // enable compaction
-        if (!was_compacted && config().is_compacted()) {
-            for (auto& s : _segs) {
-                s->mark_as_compacted_segment();
-            }
-        }
-        // disable compaction
-        if (was_compacted && !config().is_compacted()) {
-            for (auto& s : _segs) {
-                s->unmark_as_compacted_segment();
-            }
+    }
+    // disable compaction
+    if (was_compacted && !config().is_compacted()) {
+        for (auto& s : _segs) {
+            s->unmark_as_compacted_segment();
         }
     }
 
