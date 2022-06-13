@@ -10,6 +10,8 @@
  */
 
 #pragma once
+#include "config/configuration.h"
+#include "config/property.h"
 #include "model/fundamental.h"
 #include "model/metadata.h"
 #include "ssx/sformat.h"
@@ -31,13 +33,21 @@ public:
         std::optional<model::cleanup_policy_bitflags> cleanup_policy_bitflags;
         // if not set use the log_manager's configuration
         std::optional<model::compaction_strategy> compaction_strategy;
-        // if not set, use the log_manager's configuration
-        std::optional<size_t> segment_size;
 
+        //---- configs with server level defaults begin--------
+        //
+        // These configs have server level defaults that must be used if no overrides
+        // are present. Both the server level configs and ntp overrides can evolve
+        // independently after bootstrap. Any such new configuration additions should
+        // be tracked in the parent class.
+        std::optional<size_t> segment_size;
         // partition retention settings. If tristate is disabled the feature
         // will be disabled if there is no value set the default will be used
         tristate<size_t> retention_bytes{std::nullopt};
         tristate<std::chrono::milliseconds> retention_time{std::nullopt};
+        //
+        //----- configs with server level defaults end ------
+
         // if set, log will not use batch cache
         with_cache cache_enabled = with_cache::yes;
         // if set the value will be used during partition recovery
@@ -102,6 +112,18 @@ public:
     const default_overrides& get_overrides() const { return *_overrides; }
     default_overrides& get_overrides() { return *_overrides; }
 
+    const size_t& get_max_segment_size() const {
+        return _max_segment_size();
+    }
+
+    const std::optional<std::chrono::milliseconds>& get_delete_retention_ms() {
+        return _retention_time();
+    }
+
+    const std::optional<size_t>& get_retention_bytes() {
+        return _retention_bytes();
+    }
+
     bool has_overrides() const { return _overrides != nullptr; }
 
     bool is_compacted() const {
@@ -138,6 +160,9 @@ public:
 
     void set_overrides(default_overrides o) {
         _overrides = std::make_unique<default_overrides>(o);
+        _max_segment_size.set_override(_overrides->segment_size);
+        _retention_time.set_override(_overrides->retention_time.value());
+        _retention_bytes.set_override(_overrides->retention_bytes.value());
     }
 
     bool is_archival_enabled() const {
@@ -158,6 +183,13 @@ private:
     ss::sstring _base_dir;
 
     std::unique_ptr<default_overrides> _overrides;
+
+    config::property_with_override<size_t> _max_segment_size{
+        config::shard_local_cfg().log_segment_size};
+    config::property_with_override<tristate<std::chrono::milliseconds>>
+        _retention_time{config::shard_local_cfg().delete_retention_ms};
+    config::property_with_override<tristate<size_t>> _retention_bytes{
+        config::shard_local_cfg().retention_bytes};
 
     /**
      * A number indicating an id of the NTP in case it was created more
