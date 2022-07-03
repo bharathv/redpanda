@@ -339,10 +339,10 @@ private:
     ss::future<>
       apply_control(model::producer_identity, model::control_record_type);
     void apply_data(model::batch_identity, model::offset);
+    void apply_checkpoint(const model::record_batch&);
 
     ss::future<> reduce_aborted_list();
     ss::future<> offload_aborted_txns();
-
     // The state of this state machine maybe change via two paths
     //
     //   - by reading the already replicated commands from raft and
@@ -504,6 +504,8 @@ private:
     get_tx_status(model::producer_identity pid) const;
     std::optional<expiration_info>
     get_expiration_info(model::producer_identity pid) const;
+
+    ss::future<std::error_code> checkpoint_in_memory_state(mem_state&&);
 
     uint8_t active_snapshot_version();
 

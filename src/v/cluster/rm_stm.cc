@@ -824,11 +824,18 @@ ss::future<result<kafka_result>> rm_stm::replicate(
 
 ss::future<std::error_code>
 rm_stm::transfer_leadership(std::optional<model::node_id> target) {
-    return _state_lock.hold_write_lock().then(
-      [this, target](ss::basic_rwlock<>::holder unit) {
-          return _c->do_transfer_leadership(target).finally(
-            [u = std::move(unit)] {});
-      });
+    auto units = co_await _state_lock.hold_write_lock();
+    auto state = std::exchange(_mem_state, {});
+    auto err = co_await checkpoint_in_memory_state(std::move(state));
+    if (err) {
+        vlog(
+          clusterlog.warn,
+          "Error checkpointing in memory state {}, stepping down.",
+          err);
+        co_await _c->step_down();
+        co_return err;
+    }
+    co_return co_await _c->do_transfer_leadership(target);
 }
 
 ss::future<result<kafka_result>> rm_stm::do_replicate(
@@ -1771,8 +1778,9 @@ ss::future<> rm_stm::apply(model::record_batch b) {
         } else {
             apply_data(bid, last_offset);
         }
+    } else if (hdr.type == model::record_batch_type::tx_checkpoint) {
+        apply_checkpoint(b);
     }
-
     _insync_offset = last_offset;
 
     compact_snapshot();
@@ -1886,6 +1894,12 @@ void rm_stm::apply_data(model::batch_identity bid, model::offset last_offset) {
             _mem_state.estimated.erase(bid.pid);
         }
     }
+}
+
+void rm_stm::apply_checkpoint(const model::record_batch&) {}
+
+ss::future<std::error_code> rm_stm::checkpoint_in_memory_state(mem_state&&) {
+    co_return make_error_code(tx_errc::none);
 }
 
 ss::future<>
