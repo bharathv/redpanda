@@ -16,6 +16,7 @@
 #include "model/record.h"
 #include "raft/consensus_utils.h"
 #include "raft/errc.h"
+#include "raft/group_manager.h"
 #include "raft/types.h"
 #include "storage/parser_utils.h"
 #include "storage/record_batch_builder.h"
@@ -189,6 +190,7 @@ struct tx_snapshot_v0 {
 
 rm_stm::rm_stm(
   ss::logger& logger,
+  raft::group_manager& raft_manager,
   raft::consensus* c,
   ss::sharded<cluster::tx_gateway_frontend>& tx_gateway_frontend)
   : persisted_stm("tx.snapshot", logger, c)
@@ -217,6 +219,10 @@ rm_stm::rm_stm(
         vassert(false, "Unknown recovery policy: {}", _recovery_policy);
     }
     auto_abort_timer.set_callback([this] { abort_old_txes(); });
+    raft_manager.register_leadership_notification(
+      [this](auto group, auto term, auto node) {
+          on_leadership_change(group, term, node);
+      });
 }
 
 bool rm_stm::check_tx_permitted() {
@@ -468,6 +474,11 @@ ss::future<tx_errc> rm_stm::do_prepare_tx(
 
     co_return tx_errc::none;
 }
+
+void rm_stm::on_leadership_change(
+  [[maybe_unused]] raft::group_id group,
+  [[maybe_unused]] model::term_id term,
+  [[maybe_unused]] std::optional<model::node_id> node_id) {}
 
 ss::future<tx_errc> rm_stm::commit_tx(
   model::producer_identity pid,

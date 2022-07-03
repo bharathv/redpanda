@@ -119,7 +119,11 @@ ss::future<consensus_ptr> partition_manager::manage(
         group, std::move(initial_nodes), log);
 
     auto p = ss::make_lw_shared<partition>(
-      c, _tx_gateway_frontend, _cloud_storage_api, _cloud_storage_cache);
+      c,
+      _raft_manager,
+      _tx_gateway_frontend,
+      _cloud_storage_api,
+      _cloud_storage_cache);
 
     _ntp_table.emplace(log.config().ntp(), p);
     _raft_table.emplace(group, p);
