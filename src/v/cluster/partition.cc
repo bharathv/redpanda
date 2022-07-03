@@ -30,6 +30,7 @@ static bool is_tx_manager_topic(const model::ntp& ntp) {
 
 partition::partition(
   consensus_ptr r,
+  ss::sharded<raft::group_manager>& raft_manager,
   ss::sharded<cluster::tx_gateway_frontend>& tx_gateway_frontend,
   ss::sharded<cloud_storage::remote>& cloud_storage_api,
   ss::sharded<cloud_storage::cache>& cloud_storage_cache)
@@ -70,7 +71,10 @@ partition::partition(
 
         if (has_rm_stm) {
             _rm_stm = ss::make_shared<cluster::rm_stm>(
-              clusterlog, _raft.get(), _tx_gateway_frontend);
+              clusterlog,
+              raft_manager.local(),
+              _raft.get(),
+              _tx_gateway_frontend);
             stm_manager->add_stm(_rm_stm);
         }
 

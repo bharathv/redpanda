@@ -18,6 +18,7 @@
 #include "model/fundamental.h"
 #include "model/record.h"
 #include "raft/errc.h"
+#include "raft/fwd.h"
 #include "raft/logger.h"
 #include "raft/state_machine.h"
 #include "raft/types.h"
@@ -149,6 +150,7 @@ public:
 
     explicit rm_stm(
       ss::logger&,
+      raft::group_manager&,
       raft::consensus*,
       ss::sharded<cluster::tx_gateway_frontend>&);
 
@@ -183,6 +185,9 @@ public:
       transfer_leadership(std::optional<model::node_id>);
 
     ss::future<> stop() override;
+
+    void on_leadership_change(
+      raft::group_id, model::term_id, std::optional<model::node_id>);
 
     void testing_only_disable_auto_abort() { _is_autoabort_enabled = false; }
 

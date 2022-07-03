@@ -42,6 +42,7 @@ class partition {
 public:
     partition(
       consensus_ptr r,
+      ss::sharded<raft::group_manager>&,
       ss::sharded<cluster::tx_gateway_frontend>&,
       ss::sharded<cloud_storage::remote>&,
       ss::sharded<cloud_storage::cache>&);

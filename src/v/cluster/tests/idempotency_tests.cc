@@ -36,7 +36,8 @@ FIXTURE_TEST(
     start_raft();
 
     ss::sharded<cluster::tx_gateway_frontend> tx_gateway_frontend;
-    cluster::rm_stm stm(logger, _raft.get(), tx_gateway_frontend);
+    cluster::rm_stm stm(
+      logger, _group_mgr.local(), _raft.get(), tx_gateway_frontend);
     stm.testing_only_disable_auto_abort();
 
     stm.start().get0();
@@ -88,7 +89,8 @@ FIXTURE_TEST(
     start_raft();
 
     ss::sharded<cluster::tx_gateway_frontend> tx_gateway_frontend;
-    cluster::rm_stm stm(logger, _raft.get(), tx_gateway_frontend);
+    cluster::rm_stm stm(
+      logger, _group_mgr.local(), _raft.get(), tx_gateway_frontend);
     stm.testing_only_disable_auto_abort();
 
     stm.start().get0();
@@ -141,7 +143,8 @@ FIXTURE_TEST(test_rm_stm_caches_last_5_offsets, mux_state_machine_fixture) {
     start_raft();
 
     ss::sharded<cluster::tx_gateway_frontend> tx_gateway_frontend;
-    cluster::rm_stm stm(logger, _raft.get(), tx_gateway_frontend);
+    cluster::rm_stm stm(
+      logger, _group_mgr.local(), _raft.get(), tx_gateway_frontend);
     stm.testing_only_disable_auto_abort();
 
     stm.start().get0();
@@ -206,7 +209,8 @@ FIXTURE_TEST(test_rm_stm_doesnt_cache_6th_offset, mux_state_machine_fixture) {
     start_raft();
 
     ss::sharded<cluster::tx_gateway_frontend> tx_gateway_frontend;
-    cluster::rm_stm stm(logger, _raft.get(), tx_gateway_frontend);
+    cluster::rm_stm stm(
+      logger, _group_mgr.local(), _raft.get(), tx_gateway_frontend);
     stm.testing_only_disable_auto_abort();
 
     stm.start().get0();
@@ -266,7 +270,8 @@ FIXTURE_TEST(test_rm_stm_prevents_gaps, mux_state_machine_fixture) {
     start_raft();
 
     ss::sharded<cluster::tx_gateway_frontend> tx_gateway_frontend;
-    cluster::rm_stm stm(logger, _raft.get(), tx_gateway_frontend);
+    cluster::rm_stm stm(
+      logger, _group_mgr.local(), _raft.get(), tx_gateway_frontend);
     stm.testing_only_disable_auto_abort();
 
     stm.start().get0();
@@ -319,7 +324,8 @@ FIXTURE_TEST(
     start_raft();
 
     ss::sharded<cluster::tx_gateway_frontend> tx_gateway_frontend;
-    cluster::rm_stm stm(logger, _raft.get(), tx_gateway_frontend);
+    cluster::rm_stm stm(
+      logger, _group_mgr.local(), _raft.get(), tx_gateway_frontend);
     stm.testing_only_disable_auto_abort();
 
     stm.start().get0();
@@ -355,7 +361,8 @@ FIXTURE_TEST(test_rm_stm_passes_immediate_retry, mux_state_machine_fixture) {
     start_raft();
 
     ss::sharded<cluster::tx_gateway_frontend> tx_gateway_frontend;
-    cluster::rm_stm stm(logger, _raft.get(), tx_gateway_frontend);
+    cluster::rm_stm stm(
+      logger, _group_mgr.local(), _raft.get(), tx_gateway_frontend);
     stm.testing_only_disable_auto_abort();
 
     stm.start().get0();
