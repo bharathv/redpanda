@@ -792,11 +792,9 @@ ss::future<result<raft::replicate_result>> rm_stm::replicate(
 
 ss::future<std::error_code>
 rm_stm::transfer_leadership(std::optional<model::node_id> target) {
-    return _state_lock.hold_write_lock().then(
-      [this, target](ss::basic_rwlock<>::holder unit) {
-          return _c->do_transfer_leadership(target).finally(
-            [u = std::move(unit)] {});
-      });
+    auto units = co_await _state_lock.hold_write_lock();
+    co_await checkpoint_in_memory_state();
+    co_return co_await _c->do_transfer_leadership(target);
 }
 
 ss::future<result<raft::replicate_result>> rm_stm::do_replicate(
@@ -1705,8 +1703,9 @@ ss::future<> rm_stm::apply(model::record_batch b) {
         } else {
             apply_data(bid, last_offset);
         }
+    } else if (hdr.type == model::record_batch_type::tx_checkpoint) {
+        apply_checkpoint(b);
     }
-
     _insync_offset = last_offset;
 
     compact_snapshot();
@@ -1805,6 +1804,11 @@ void rm_stm::apply_data(model::batch_identity bid, model::offset last_offset) {
         }
     }
 }
+
+void rm_stm::apply_checkpoint([
+  [maybe_unused]] const model::record_batch& batch) {}
+
+ss::future<> rm_stm::checkpoint_in_memory_state() const { co_return; }
 
 ss::future<>
 rm_stm::apply_snapshot(stm_snapshot_header hdr, iobuf&& tx_ss_buf) {
