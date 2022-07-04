@@ -1808,7 +1808,58 @@ void rm_stm::apply_data(model::batch_identity bid, model::offset last_offset) {
 void rm_stm::apply_checkpoint([
   [maybe_unused]] const model::record_batch& batch) {}
 
-ss::future<> rm_stm::checkpoint_in_memory_state() const { co_return; }
+ss::future<model::record_batch> rm_stm::make_checkpoint_batch(
+  model::term_id term,
+  mem_state&& mem_state,
+  absl::flat_hash_map<model::producer_identity, int32_t>&& pid_to_tail_seq,
+  absl::flat_hash_map<model::producer_identity, int64_t>&& pid_to_expiry) {
+    iobuf key;
+    co_await serde::write_async(key, term);
+    iobuf val;
+    checkpoint_state state{
+      ._mem_state = std::move(mem_state),
+      ._pid_to_tail_seq = std::move(pid_to_tail_seq),
+      ._pid_to_expiry_epoch_ms = std::move(pid_to_expiry),
+    };
+    co_await serde::write_async(val, std::move(state));
+    storage::record_batch_builder builder(
+      model::record_batch_type::tx_checkpoint, model::offset(0));
+    builder.set_control_type();
+    builder.add_raw_kv(std::move(key), std::move(val));
+    co_return std::move(builder).build();
+}
+
+ss::future<> rm_stm::checkpoint_in_memory_state() {
+    absl::flat_hash_map<model::producer_identity, int32_t> pid_to_tail_seq;
+    for (auto& [pid, reqs] : _inflight_requests) {
+        pid_to_tail_seq.emplace(pid, reqs->tail_seq);
+    }
+    absl::flat_hash_map<model::producer_identity, int64_t> pid_to_expiry;
+    for (auto& [pid, exp] : _mem_state.expiration) {
+        pid_to_expiry.emplace(
+          pid,
+          duration_cast<std::chrono::milliseconds>(
+            exp.deadline().time_since_epoch())
+            .count());
+    }
+    auto batch = co_await make_checkpoint_batch(
+      _insync_term,
+      std::move(_mem_state),
+      std::move(pid_to_tail_seq),
+      std::move(pid_to_expiry));
+    _mem_state = {}; // reset
+    auto reader = model::make_memory_record_batch_reader(std::move(batch));
+    auto result = co_await _c->replicate(
+      _insync_term,
+      std::move(reader),
+      raft::replicate_options(raft::consistency_level::quorum_ack));
+    if (!result) {
+        // This is on a best effort basis, if we do not replicate, txns are
+        // aborted on the new leader and the client is expected to retry.
+        vlog(clusterlog.error, "Error replicating checkpoint batch");
+    }
+    co_return;
+}
 
 ss::future<>
 rm_stm::apply_snapshot(stm_snapshot_header hdr, iobuf&& tx_ss_buf) {

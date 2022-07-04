@@ -323,7 +323,7 @@ private:
     abort_origin
     get_abort_origin(const model::producer_identity&, model::tx_seq) const;
 
-    ss::future<> checkpoint_in_memory_state() const;
+    ss::future<> checkpoint_in_memory_state();
 
     ss::future<> apply(model::record_batch) override;
     void apply_fence(model::record_batch&&);
@@ -371,7 +371,9 @@ private:
         absl::flat_hash_map<model::producer_identity, seq_entry> seq_table;
     };
 
-    struct mem_state {
+    struct mem_state
+      : public serde::
+          envelope<mem_state, serde::version<0>, serde::compat_version<0>> {
         // once raft's term has passed mem_state::term we wipe mem_state
         // and wait until log_state catches up with current committed index.
         // with this approach a combination of mem_state and log_state is
@@ -407,6 +409,17 @@ private:
                 tx_starts.erase(tx_start_it->second);
                 tx_start.erase(pid);
             }
+        }
+
+        auto serde_fields() {
+            return std::tie(
+              term,
+              tx_start,
+              tx_starts,
+              estimated,
+              expected,
+              last_end_tx,
+              inflight);
         }
     };
 
@@ -481,6 +494,18 @@ private:
         }
     };
 
+    // State to checkpoint for graceful leadership transfer
+    struct checkpoint_state
+      : public serde::envelope<
+          checkpoint_state,
+          serde::version<0>,
+          serde::compat_version<0>> {
+        mem_state _mem_state;
+        absl::flat_hash_map<model::producer_identity, int32_t> _pid_to_tail_seq;
+        absl::flat_hash_map<model::producer_identity, int64_t>
+          _pid_to_expiry_epoch_ms;
+    };
+
     ss::lw_shared_ptr<mutex> get_tx_lock(model::producer_id pid) {
         auto lock_it = _tx_locks.find(pid);
         if (lock_it == _tx_locks.end()) {
@@ -495,6 +520,12 @@ private:
     get_tx_status(model::producer_identity pid) const;
     std::optional<expiration_info>
     get_expiration_info(model::producer_identity pid) const;
+
+    ss::future<model::record_batch> make_checkpoint_batch(
+      model::term_id,
+      mem_state&&,
+      absl::flat_hash_map<model::producer_identity, int32_t>&&,
+      absl::flat_hash_map<model::producer_identity, int64_t>&&);
 
     ss::basic_rwlock<> _state_lock;
     absl::flat_hash_map<model::producer_id, ss::lw_shared_ptr<mutex>> _tx_locks;
