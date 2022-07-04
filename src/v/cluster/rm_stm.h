@@ -193,7 +193,11 @@ public:
 
     void testing_only_enable_transactions() { _is_tx_enabled = true; }
 
-    struct expiration_info {
+    struct expiration_info
+      : public serde::envelope<
+          expiration_info,
+          serde::version<0>,
+          serde::compat_version<0>> {
         duration_type timeout;
         time_point_type last_update;
         bool is_expiration_requested;
@@ -203,6 +207,8 @@ public:
         bool is_expired(time_point_type now) const {
             return is_expiration_requested || deadline() <= now;
         }
+
+        auto serde_fields() { return std::tie(timeout); }
     };
 
     struct transaction_info {
@@ -380,7 +386,9 @@ private:
         absl::flat_hash_map<model::producer_identity, seq_entry> seq_table;
     };
 
-    struct mem_state {
+    struct mem_state
+      : public serde::
+          envelope<mem_state, serde::version<0>, serde::compat_version<0>> {
         // once raft's term has passed mem_state::term we wipe mem_state
         // and wait until log_state catches up with current committed index.
         // with this approach a combination of mem_state and log_state is
@@ -416,6 +424,18 @@ private:
                 tx_starts.erase(tx_start_it->second);
                 tx_start.erase(pid);
             }
+        }
+
+        auto serde_fields() {
+            return std::tie(
+              term,
+              tx_start,
+              tx_starts,
+              estimated,
+              expiration,
+              expected,
+              last_end_tx,
+              inflight);
         }
     };
 
@@ -506,6 +526,8 @@ private:
     get_expiration_info(model::producer_identity pid) const;
 
     ss::future<std::error_code> checkpoint_in_memory_state(mem_state&&);
+
+    ss::future<model::record_batch> make_checkpoint_batch(mem_state&&);
 
     uint8_t active_snapshot_version();
 

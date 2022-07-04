@@ -121,7 +121,9 @@ enum class tx_errc {
     // the target node
     request_rejected,
     invalid_producer_id_mapping,
-    invalid_txn_state
+    invalid_txn_state,
+    // Blanket error code for failed checkpointing of in memory tx state.
+    checkpoint_failed
 };
 struct tx_errc_category final : public std::error_category {
     const char* name() const noexcept final { return "cluster::tx_errc"; }
@@ -164,6 +166,8 @@ struct tx_errc_category final : public std::error_category {
             return "Unknown server error";
         case tx_errc::request_rejected:
             return "Request rejected";
+        case tx_errc::checkpoint_failed:
+            return "Checkpoint failed";
         default:
             return "cluster::tx_errc::unknown";
         }

@@ -1898,7 +1898,34 @@ void rm_stm::apply_data(model::batch_identity bid, model::offset last_offset) {
 
 void rm_stm::apply_checkpoint(const model::record_batch&) {}
 
-ss::future<std::error_code> rm_stm::checkpoint_in_memory_state(mem_state&&) {
+ss::future<model::record_batch>
+rm_stm::make_checkpoint_batch(mem_state&& state) {
+    iobuf key;
+    co_await serde::write_async(key, model::record_batch_type::tx_checkpoint);
+    iobuf val;
+    co_await serde::write_async(val, std::move(state));
+    storage::record_batch_builder builder(
+      model::record_batch_type::tx_checkpoint, model::offset(0));
+    builder.set_control_type();
+    builder.add_raw_kv(std::move(key), std::move(val));
+    co_return std::move(builder).build();
+}
+
+ss::future<std::error_code>
+rm_stm::checkpoint_in_memory_state(mem_state&& state) {
+    auto batch = co_await make_checkpoint_batch(std::move(state));
+    auto reader = model::make_memory_record_batch_reader(std::move(batch));
+    auto result = co_await _c->replicate(
+      _insync_term,
+      std::move(reader),
+      raft::replicate_options(raft::consistency_level::quorum_ack));
+    if (!result) {
+        vlog(
+          clusterlog.warn,
+          "Error replicating checkpoint batch: {}",
+          result.error());
+        co_return make_error_code(tx_errc::checkpoint_failed);
+    }
     co_return make_error_code(tx_errc::none);
 }
 
