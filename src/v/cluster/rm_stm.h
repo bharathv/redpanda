@@ -415,6 +415,49 @@ private:
         }
     };
 
+    // ----- Condensed representation of mem_state (only used for serialization) -----
+
+    // We use a condensed representation of in memory state to checkpoint in the
+    // log before a graceful leadership transfer. Tries to avoid duplicated information
+    // wherever possible. State can be broken down into two main entries.
+
+    // 1. transaction state (prefixed with tx_)
+    // 2. idempotency state (prefixed with idem_)
+
+    // TODO: Switch to using the same format for in memory state to avoid an extra conversion
+    // cost and better readability, currently we have the state for a single pid spread over
+    // a lot of places making it to hard to update and enforce invariants.
+
+    /**
+     * State for a given producer identity.
+     */
+    struct tx_pid_state {
+      model::offset tx_start;
+      model::offset estimated;
+      model::tx_seq expected;
+      prepare_marker preparing;
+      expiration_info expiration;
+      int64_t inflight;
+    };
+
+    struct tx_mem_state {
+      absl::btree_set<model::offset> tx_starts;
+      absl::flat_hash_map<model::producer_identity, tx_pid_state> pid_to_state;
+      model::offset last_end_tx;
+    };
+
+    struct idem_inflight_seqs {
+      absl::flat_hash_map<model::producer_identity, int32_t> pid_to_last_seq;
+    };
+
+    struct mem_state_serialized {
+      model::term_id term;
+      tx_mem_state tx_state;
+      idem_inflight_seqs idem_state;
+    };
+
+    // ------ (End) condensed mem state ------
+
     struct request_id {
         model::producer_identity pid;
         int32_t seq;
