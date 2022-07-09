@@ -324,6 +324,7 @@ private:
     get_abort_origin(const model::producer_identity&, model::tx_seq) const;
 
     ss::future<> checkpoint_in_memory_state();
+    ss::future<> replicate_checkpoint_purge(model::term_id);
 
     ss::future<> apply(model::record_batch) override;
     void apply_fence(model::record_batch&&);
@@ -527,6 +528,8 @@ private:
       absl::flat_hash_map<model::producer_identity, int32_t>&&,
       absl::flat_hash_map<model::producer_identity, int64_t>&&);
 
+    ss::future<model::record_batch> make_checkpoint_purge_batch(model::term_id);
+
     ss::basic_rwlock<> _state_lock;
     absl::flat_hash_map<model::producer_id, ss::lw_shared_ptr<mutex>> _tx_locks;
     absl::flat_hash_map<
@@ -535,6 +538,10 @@ private:
       _inflight_requests;
     log_state _log_state;
     mem_state _mem_state;
+    // On assuming leadership, wait for followers to purge their in memory state
+    // before accepting new requests.
+    mutex _wait_for_checkpoint_purge;
+    model::term_id _last_checkpoint_purge_issued_term = model::term_id{-1};
     ss::timer<clock_type> auto_abort_timer;
     model::timestamp _oldest_session;
     std::chrono::milliseconds _sync_timeout;

@@ -40,6 +40,9 @@ enum class record_batch_type : int8_t {
     cluster_config_cmd = 20,         // cluster config deltas and status
     feature_update = 21,             // Node logical versions updates
     tx_checkpoint = 22,              // checkpoint in memory state to followers
+    tx_checkpoint_purge
+    = 23, // Purge the in memory txn state, issued by leader to
+          // followers on successful transfer of leadership.
 };
 
 std::ostream& operator<<(std::ostream& o, record_batch_type bt);

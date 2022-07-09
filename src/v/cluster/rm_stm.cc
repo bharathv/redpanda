@@ -1437,6 +1437,12 @@ ss::future<bool> rm_stm::sync(model::timeout_clock::duration timeout) {
     auto ready = co_await persisted_stm::sync(timeout);
     if (ready) {
         if (_mem_state.term != _insync_term) {
+            // There is a term change, issue a checkpoint purge to followers
+            // All other replicate ops need to wait until this finishes, this is
+            // so that the followers clean up the state before we start applying
+            // changes to the in memory state.
+            co_await _wait_for_checkpoint_purge.with(
+              [this]() { return replicate_checkpoint_purge(_insync_term); });
             _mem_state = mem_state{.term = _insync_term};
         }
     }
@@ -1829,6 +1835,36 @@ ss::future<model::record_batch> rm_stm::make_checkpoint_batch(
     co_return std::move(builder).build();
 }
 
+ss::future<model::record_batch>
+rm_stm::make_checkpoint_purge_batch(model::term_id term) {
+    iobuf key;
+    co_await serde::write_async(key, term);
+    storage::record_batch_builder builder(
+      model::record_batch_type::tx_checkpoint_purge, model::offset(0));
+    builder.set_control_type();
+    builder.add_raw_kv(std::move(key), iobuf{});
+    co_return std::move(builder).build();
+}
+
+ss::future<> rm_stm::replicate_checkpoint_purge(model::term_id term) {
+    if (_last_checkpoint_purge_issued_term >= term) {
+        co_return;
+    }
+    auto batch = co_await make_checkpoint_purge_batch(term);
+    auto reader = model::make_memory_record_batch_reader(std::move(batch));
+    auto result = co_await _c->replicate(
+      term,
+      std::move(reader),
+      raft::replicate_options(raft::consistency_level::quorum_ack));
+    if (!result) {
+        vassert(
+          false, "Unable to issue checkpoint purge to followers, aborting..");
+    }
+    _last_checkpoint_purge_issued_term = term;
+    vlog(clusterlog.info, "Issued checkpoint purge batch with term {}", term);
+    co_return;
+}
+
 ss::future<> rm_stm::checkpoint_in_memory_state() {
     absl::flat_hash_map<model::producer_identity, int32_t> pid_to_tail_seq;
     for (auto& [pid, reqs] : _inflight_requests) {
@@ -1858,6 +1894,10 @@ ss::future<> rm_stm::checkpoint_in_memory_state() {
         // aborted on the new leader and the client is expected to retry.
         vlog(clusterlog.error, "Error replicating checkpoint batch");
     }
+    vlog(
+      clusterlog.info,
+      "Replicated checkpoint state with term {}",
+      _insync_term);
     co_return;
 }
 

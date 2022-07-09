@@ -134,6 +134,7 @@ class BatchType(Enum):
     cluster_config_cmd = 20
     feature_update = 21
     tx_checkpoint = 22
+    tx_checkpoint_purge = 23
     unknown = -1
 
     @classmethod
