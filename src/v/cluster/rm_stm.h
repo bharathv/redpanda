@@ -336,6 +336,8 @@ private:
     void apply_checkpoint(const model::record_batch&);
     void apply_checkpoint_purge(const model::record_batch&);
 
+    void reconcile_mem_state();
+
     // The state of this state machine maybe change via two paths
     //
     //   - by reading the already replicated commands from raft and

@@ -1441,9 +1441,10 @@ ss::future<bool> rm_stm::sync(model::timeout_clock::duration timeout) {
             // All other replicate ops need to wait until this finishes, this is
             // so that the followers clean up the state before we start applying
             // changes to the in memory state.
-            co_await _wait_for_checkpoint_purge.with(
-              [this]() { return replicate_checkpoint_purge(_insync_term); });
-            _mem_state = mem_state{.term = _insync_term};
+            co_await _wait_for_checkpoint_purge.with([this]() {
+                return replicate_checkpoint_purge(_insync_term)
+                  .then([this]() mutable { reconcile_mem_state(); });
+            });
         }
     }
     co_return ready;
@@ -1898,6 +1899,34 @@ ss::future<> rm_stm::replicate_checkpoint_purge(model::term_id term) {
     _last_checkpoint_purge_issued_term = term;
     vlog(clusterlog.info, "Issued checkpoint purge batch with term {}", term);
     co_return;
+}
+
+void rm_stm::reconcile_mem_state() {
+    if (!_c->is_leader()) return;
+    _mem_state = std::move(_parked_checkpointed_mem_state._mem_state);
+    auto source_term = _mem_state.term;
+    _mem_state.term = _insync_term; // Reset to current in sync term.
+    for (auto& [k, v] :
+         _parked_checkpointed_mem_state._pid_to_expiry_epoch_ms) {
+        time_point_type deadline_epoch{std::chrono::milliseconds{v}};
+        // Clock drift between nodes may effect this. Does not effect
+        // correctness but the pid may expire either a few ms before or after
+        // depending on how bad the drift is.
+        auto ms_left = std::chrono::duration_cast<std::chrono::milliseconds>(
+          deadline_epoch - clock_type::now());
+        vlog(clusterlog.debug, "Tracking tx {} ms_left {}", k, ms_left.count());
+        track_tx(k, ms_left);
+    }
+    for (auto& [pid, seq] : _parked_checkpointed_mem_state._pid_to_tail_seq) {
+        _inflight_requests.emplace(pid, ss::make_lw_shared<inflight_requests>());
+        _inflight_requests[pid]->tail_seq = seq;
+        vlog(clusterlog.debug, "Tracking pid {}, tail_seq {}", pid, seq);
+    }
+    vlog(
+      clusterlog.info,
+      "Successfully reconciled checkpointed state from term {}",
+      source_term);
+    _parked_checkpointed_mem_state = {}; // final reset.
 }
 
 ss::future<> rm_stm::checkpoint_in_memory_state() {
