@@ -324,7 +324,8 @@ ss::future<checked<model::term_id, tx_errc>> rm_stm::do_begin_tx(
         co_return tx_errc::fenced;
     }
 
-    auto [_, inserted] = _mem_state.expected.emplace(pid, tx_seq);
+    auto [_, inserted] = _mem_state.expected.emplace(
+      pid, std::make_pair(synced_term, tx_seq));
     if (!inserted) {
         // TODO: https://app.clubhouse.io/vectorized/story/2194
         // tm_stm forgot that it had already begun a transaction
@@ -380,7 +381,6 @@ ss::future<tx_errc> rm_stm::do_prepare_tx(
     if (!co_await sync(timeout)) {
         co_return tx_errc::stale;
     }
-    auto synced_term = _insync_term;
 
     auto prepared_it = _log_state.prepared.find(pid);
     if (prepared_it != _log_state.prepared.end()) {
@@ -407,20 +407,6 @@ ss::future<tx_errc> rm_stm::do_prepare_tx(
         co_return tx_errc::fenced;
     }
 
-    if (synced_term != etag) {
-        vlog(
-          clusterlog.warn,
-          "Can't prepare pid:{} - partition lost leadership current term: {} "
-          "expected term: {}",
-          pid,
-          synced_term,
-          etag);
-        // current partition changed leadership since a transaction started
-        // there is a chance that not all writes were replicated
-        // rejecting a tx to prevent data loss
-        co_return tx_errc::request_rejected;
-    }
-
     auto expected_it = _mem_state.expected.find(pid);
     if (expected_it == _mem_state.expected.end()) {
         // impossible situation, a transaction coordinator tries
@@ -429,7 +415,23 @@ ss::future<tx_errc> rm_stm::do_prepare_tx(
         co_return tx_errc::request_rejected;
     }
 
-    if (expected_it->second != tx_seq) {
+    // TODO: Revisit the term tracking here, it is only retained for historical
+    // significance, can be removed once we are confident enough that nothing
+    // else breaks.
+    if (expected_it->second.first != etag) {
+        vlog(
+          clusterlog.warn,
+          "Can't prepare pid:{} - partition lost leadership current term: {} "
+          "expected term: {}",
+          pid,
+          expected_it->second.first,
+          etag);
+        // Begin term of the txn doesn't match with etag (from tm), ideally this
+        // should not happen.
+        co_return tx_errc::request_rejected;
+    }
+
+    if (expected_it->second.second != tx_seq) {
         // current prepare_tx call is stale, rejecting
         co_return tx_errc::request_rejected;
     }
@@ -448,7 +450,7 @@ ss::future<tx_errc> rm_stm::do_prepare_tx(
     auto batch = make_prepare_batch(marker);
     auto reader = model::make_memory_record_batch_reader(std::move(batch));
     auto r = co_await _c->replicate(
-      etag,
+      _insync_term,
       std::move(reader),
       raft::replicate_options(raft::consistency_level::quorum_ack));
 
@@ -605,10 +607,10 @@ abort_origin rm_stm::get_abort_origin(
   const model::producer_identity& pid, model::tx_seq tx_seq) const {
     auto expected_it = _mem_state.expected.find(pid);
     if (expected_it != _mem_state.expected.end()) {
-        if (tx_seq < expected_it->second) {
+        if (tx_seq < expected_it->second.second) {
             return abort_origin::past;
         }
-        if (expected_it->second < tx_seq) {
+        if (expected_it->second.second < tx_seq) {
             return abort_origin::future;
         }
     }

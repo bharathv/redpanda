@@ -394,7 +394,11 @@ private:
         absl::flat_hash_map<model::producer_identity, model::offset> estimated;
         // a set of ongoing sessions. we use it  to prevent some client protocol
         // errors like the transactional writes outside of a transaction
-        absl::flat_hash_map<model::producer_identity, model::tx_seq> expected;
+        // we track the term id in which this transaction began.
+        absl::flat_hash_map<
+          model::producer_identity,
+          std::pair<model::term_id, model::tx_seq>>
+          expected;
         // `preparing` helps to identify failed prepare requests and use them to
         // filter out stale abort requests
         absl::flat_hash_map<model::producer_identity, prepare_marker> preparing;
