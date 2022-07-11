@@ -1528,9 +1528,9 @@ ss::future<bool> rm_stm::sync(model::timeout_clock::duration timeout) {
                       // Some other fiber reset the state already, move on.
                       return ss::make_ready_future<bool>(true);
                   }
+                  reconcile_mem_state();
                   return replicate_checkpoint_applied(_insync_term);
               });
-            _mem_state = mem_state{.term = _insync_term};
             co_return result;
         }
     }
@@ -1976,6 +1976,32 @@ ss::future<bool> rm_stm::replicate_checkpoint_applied(model::term_id term) {
     }
     vlog(clusterlog.info, "Issued checkpoint applied batch with term {}", term);
     co_return true;
+}
+
+void rm_stm::reconcile_mem_state() {
+    vassert(
+      _mem_state.term != _insync_term,
+      "Invalid reconciliation, without term mismatch, term {}",
+      _insync_term);
+    if (!_parked_checkpointed_mem_state) {
+        // Nothing parked, reset and return.
+        _mem_state = mem_state{.term = _insync_term};
+        return;
+    }
+    // We have something from previous leader, reconcile state.
+    _mem_state = std::move(
+      std::exchange(_parked_checkpointed_mem_state, std::nullopt).value());
+    _mem_state.term = _insync_term; // Reset to current in sync term.
+    // Reset the tx expiration timers. This can have the side effect of txns
+    // expiring later than expected.
+    for (auto& [k, v] : _mem_state.expiration) {
+        track_tx(
+          k, std::chrono::duration_cast<std::chrono::milliseconds>(v.timeout));
+    }
+    vlog(
+      clusterlog.info,
+      "Successfully reconciled checkpointed state in term: {}",
+      _insync_term);
 }
 
 ss::future<std::error_code>
