@@ -1136,19 +1136,6 @@ ss::future<result<raft::replicate_result>> rm_stm::replicate_seq(
         co_return errc::not_leader;
     }
 
-    if (session->term < synced_term) {
-        // we don't care about old inflight requests because the sync
-        // guarantee (all replicated records of the last term are
-        // applied) makes sure that the passed inflight records got
-        // into _log_state->seq_table
-        session->forget();
-        session->term = synced_term;
-    }
-
-    if (session->term > synced_term) {
-        co_return errc::not_leader;
-    }
-
     // checking if the request (identified by seq) is already resolved
     // checking among the pending requests
     auto cached_r = session->known_seq(bid.last_seq);
@@ -1847,6 +1834,8 @@ void rm_stm::apply_checkpoint_purge(const model::record_batch& batch) {
         return;
     }
     _parked_checkpointed_mem_state = {};
+    _mem_state = {};
+    _inflight_requests.clear();
     vlog(clusterlog.info, "Purged local checkpoint state from term {}", term);
 }
 

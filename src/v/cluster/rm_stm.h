@@ -472,7 +472,6 @@ private:
     struct inflight_requests {
         mutex lock;
         int32_t tail_seq{-1};
-        model::term_id term;
         ss::circular_buffer<ss::lw_shared_ptr<inflight_request>> cache;
 
         void forget() {
