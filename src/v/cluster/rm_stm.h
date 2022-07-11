@@ -538,6 +538,10 @@ private:
       _inflight_requests;
     log_state _log_state;
     mem_state _mem_state;
+    // A temporary place to park the checkpointed state from a leader node. We
+    // promote this to _mem_state only if the current node becomes the partition
+    // leader. Otherwise a purge batch will clean it up.
+    checkpoint_state _parked_checkpointed_mem_state;
     // On assuming leadership, wait for followers to purge their in memory state
     // before accepting new requests.
     mutex _wait_for_checkpoint_purge;
