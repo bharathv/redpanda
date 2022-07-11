@@ -1711,6 +1711,8 @@ ss::future<> rm_stm::apply(model::record_batch b) {
         }
     } else if (hdr.type == model::record_batch_type::tx_checkpoint) {
         apply_checkpoint(std::move(b));
+    } else if (hdr.type == model::record_batch_type::tx_checkpoint_purge) {
+        apply_checkpoint_purge(std::move(b));
     }
     _insync_offset = last_offset;
 
@@ -1825,6 +1827,26 @@ void rm_stm::apply_checkpoint(const model::record_batch& batch) {
     auto state = serde::from_iobuf<checkpoint_state>(std::move(val_buf));
     _parked_checkpointed_mem_state = std::move(state);
     vlog(clusterlog.info, "Parked checkpoint state from term {}", term);
+}
+
+void rm_stm::apply_checkpoint_purge(const model::record_batch& batch) {
+    vassert(
+      batch.record_count() == 1, "Checkpoint batch with multiple records");
+
+    auto r = batch.copy_records();
+    auto& record = *r.begin();
+    auto key_buf = record.release_key();
+
+    auto term = serde::from_iobuf<model::term_id>(std::move(key_buf));
+
+    auto am_leader = term == _c->term() && _c->is_leader();
+    if (am_leader) {
+        // This check avoids purging leader local state. This purge is only
+        // meant for the followers in a given term.
+        return;
+    }
+    _parked_checkpointed_mem_state = {};
+    vlog(clusterlog.info, "Purged local checkpoint state from term {}", term);
 }
 
 ss::future<model::record_batch> rm_stm::make_checkpoint_batch(

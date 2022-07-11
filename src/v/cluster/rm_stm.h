@@ -334,6 +334,7 @@ private:
     void apply_data(model::batch_identity, model::offset);
 
     void apply_checkpoint(const model::record_batch&);
+    void apply_checkpoint_purge(const model::record_batch&);
 
     // The state of this state machine maybe change via two paths
     //
