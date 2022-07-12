@@ -33,8 +33,10 @@
 #include <absl/container/node_hash_map.h>
 #include <absl/container/node_hash_set.h>
 
+#include <chrono>
 #include <iosfwd>
 #include <numeric>
+#include <ratio>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -137,6 +139,10 @@ template<typename T>
 concept is_absl_node_hash_map
   = ::detail::is_specialization_of_v<T, absl::node_hash_map>;
 
+template<class T>
+concept is_chrono_duration
+  = ::detail::is_specialization_of_v<T, std::chrono::duration>;
+
 template<typename T>
 inline constexpr auto const is_serde_compatible_v
   = is_envelope<T>
@@ -156,6 +162,7 @@ inline constexpr auto const is_serde_compatible_v
     || is_absl_flat_hash_map<T>
     || is_absl_node_hash_set<T>
     || is_absl_node_hash_map<T>
+    || is_chrono_duration<T>
     || is_std_unordered_map<T>
     || is_fragmented_vector<T> || reflection::is_tristate<T> || std::is_same_v<T, ss::net::inet_address>;
 
@@ -165,6 +172,24 @@ inline constexpr auto const are_bytes_and_string_different = !(
 
 template<typename T>
 void write(iobuf&, T);
+
+template<class R, class P>
+bool __attribute__((optnone))
+check_duration_to_ns_overflow(const std::chrono::duration<R, P>& duration) {
+    using nano_period = std::chrono::nanoseconds::period;
+    using nano_rep = typename std::chrono::nanoseconds::rep;
+    using output_type = typename std::common_type<R, nano_rep, intmax_t>::type;
+    using ratio = std::ratio_divide<P, nano_period>;
+
+    constexpr auto ratio_num = static_cast<output_type>(ratio::num);
+    const auto dur = static_cast<output_type>(duration.count());
+    const auto mul = static_cast<output_type>(dur * ratio_num);
+
+    // Overflow check. If the multiplication overflows, the check does not hold.
+    // With O2 clang seems to optimize away mul/dur to ratio_num resulting in an
+    // incorrect check. Hence the attribute ((optnone)).
+    return dur && mul / dur != ratio_num;
+}
 
 template<typename T>
 void write(iobuf& out, T t) {
@@ -261,8 +286,6 @@ void write(iobuf& out, T t) {
         return write(out, static_cast<typename Type::type>(t));
     } else if constexpr (reflection::is_ss_bool_class<Type>) {
         write(out, static_cast<int8_t>(bool(t)));
-    } else if constexpr (std::is_same_v<Type, std::chrono::milliseconds>) {
-        write<int64_t>(out, t.count());
     } else if constexpr (std::is_same_v<Type, iobuf>) {
         write<serde_size_t>(out, t.size_bytes());
         out.append(t.share(0, t.size_bytes()));
@@ -344,6 +367,41 @@ void write(iobuf& out, T t) {
 
         write(out, t.is_ipv4());
         write(out, std::move(address_bytes));
+    } else if constexpr (is_chrono_duration<Type>) {
+        // We explicitly serialize it as ns to avoid any surprises like
+        // seastar updating underlying duration types without
+        // notice. See https://github.com/redpanda-data/redpanda/pull/5002
+        //
+        // Check for overflows, chrono type casts are prone to overflows.
+        // For ex: a millisecond and nanosecond use the same underlying
+        // type int64_t but converting from one to other can easily overflow,
+        // this is by design.
+        // Since we serialize with ns precision, there is a restriction of
+        // nanoseconds::max()'s equivalent on the duration to be serialized.
+        // On a typical platform which uses int64_t for 'rep', it roughly
+        // translates to ~292 years.
+        static_assert(
+          !std::is_floating_point_v<typename Type::rep>,
+          "Floating point duration conversions are prone to precision and "
+          "rounding issues.");
+        if (unlikely(check_duration_to_ns_overflow(t))) {
+            constexpr auto min_for_type = std::chrono::duration_cast<Type>(
+                                            std::chrono::nanoseconds::min())
+                                            .count();
+            constexpr auto max_for_type = std::chrono::duration_cast<Type>(
+                                            std::chrono::nanoseconds::max())
+                                            .count();
+            throw serde_exception(fmt_with_ctx(
+              ssx::sformat,
+              "serde: overflow in duration type {} expected in range [{},{}] "
+              "input {}",
+              type_str<T>(),
+              min_for_type,
+              max_for_type,
+              t.count()));
+        }
+        auto d = std::chrono::duration_cast<std::chrono::nanoseconds>(t);
+        write<int64_t>(out, d.count());
     }
 }
 
@@ -521,9 +579,6 @@ void read_nested(iobuf_parser& in, T& t, std::size_t const bytes_left_limit) {
         t = Type{read_nested<typename Type::type>(in, bytes_left_limit)};
     } else if constexpr (reflection::is_ss_bool_class<Type>) {
         t = Type{read_nested<int8_t>(in, bytes_left_limit) != 0};
-    } else if constexpr (std::is_same_v<Type, std::chrono::milliseconds>) {
-        t = std::chrono::milliseconds{
-          read_nested<int64_t>(in, bytes_left_limit)};
     } else if constexpr (std::is_same_v<Type, iobuf>) {
         t = in.share(read_nested<serde_size_t>(in, bytes_left_limit));
     } else if constexpr (std::is_same_v<Type, ss::sstring>) {
@@ -584,6 +639,13 @@ void read_nested(iobuf_parser& in, T& t, std::size_t const bytes_left_limit) {
             t.push_back(read_nested<value_type>(in, bytes_left_limit));
         }
         t.shrink_to_fit();
+    } else if constexpr (is_chrono_duration<Type>) {
+        static_assert(
+          !std::is_floating_point_v<typename Type::rep>,
+          "Floating point duration conversions are prone to precision and "
+          "rounding issues.");
+        auto rep = read_nested<int64_t>(in, bytes_left_limit);
+        t = std::chrono::duration_cast<Type>(std::chrono::nanoseconds{rep});
     } else if constexpr (reflection::is_tristate<T>) {
         int8_t flag = read_nested<int8_t>(in, bytes_left_limit);
         if (flag == -1) {

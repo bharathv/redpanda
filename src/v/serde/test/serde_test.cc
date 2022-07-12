@@ -829,3 +829,27 @@ SEASTAR_THREAD_TEST_CASE(type_str) {
       serde::type_str<std::string>().find("string"), std::string_view::npos);
     BOOST_CHECK_EQUAL(serde::type_str<foo_bar>(), "foo_bar");
 }
+// Utility to serialize and deserialize back an input.
+template<class T>
+T serde_input(T input) {
+    return serde::from_iobuf<T>(serde::to_iobuf(std::move(input)));
+}
+
+SEASTAR_THREAD_TEST_CASE(duration_type_test) {
+    std::chrono::hours h(1);
+    std::chrono::milliseconds ms{3};
+    std::chrono::milliseconds ms_neg{-1};
+    std::chrono::duration<int, std::kilo> ks(3);
+    constexpr auto max_ns = std::chrono::nanoseconds::max();
+
+    BOOST_REQUIRE(h == serde_input(h));
+    BOOST_REQUIRE(ms == serde_input(ms));
+    BOOST_REQUIRE(ms_neg == serde_input(ms_neg));
+    BOOST_REQUIRE(ks == serde_input(ks));
+    BOOST_REQUIRE(max_ns == serde_input(max_ns));
+    // Overflows
+    constexpr auto max_ms = std::chrono::milliseconds::max();
+    constexpr auto max_hrs = std::chrono::hours::max();
+    BOOST_REQUIRE_THROW(serde_input(max_ms), serde::serde_exception);
+    BOOST_REQUIRE_THROW(serde_input(max_hrs), serde::serde_exception);
+}
