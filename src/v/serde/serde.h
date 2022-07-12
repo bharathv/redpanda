@@ -76,6 +76,9 @@ struct header {
 };
 
 template<typename T>
+concept always_false = false;
+
+template<typename T>
 concept has_serde_read = requires(T t, iobuf_parser& in, const header& h) {
     t.serde_read(in, h);
 };
@@ -144,6 +147,10 @@ template<class T>
 concept is_chrono_duration
   = ::detail::is_specialization_of_v<T, std::chrono::duration>;
 
+template<class T>
+concept is_chrono_time_point
+  = ::detail::is_specialization_of_v<T, std::chrono::time_point>;
+
 template<typename T>
 inline constexpr auto const is_serde_compatible_v
   = is_envelope<T>
@@ -164,6 +171,7 @@ inline constexpr auto const is_serde_compatible_v
     || is_absl_node_hash_set<T>
     || is_absl_node_hash_map<T>
     || is_chrono_duration<T>
+    || is_chrono_time_point<T>
     || is_std_unordered_map<T>
     || is_fragmented_vector<T> || reflection::is_tristate<T> || std::is_same_v<T, ss::net::inet_address>;
 
@@ -665,6 +673,11 @@ void read_nested(iobuf_parser& in, T& t, std::size_t const bytes_left_limit) {
           "rounding issues.");
         auto rep = read_nested<int64_t>(in, bytes_left_limit);
         t = std::chrono::duration_cast<Type>(std::chrono::nanoseconds{rep});
+    } else if constexpr (is_chrono_time_point<Type>) {
+        static_assert(
+          always_false<Type>,
+          "Time point serialization is risky and can have unintended "
+          "consequences. Check with RedPanda team before fixing this.");
     } else if constexpr (reflection::is_tristate<T>) {
         int8_t flag = read_nested<int8_t>(in, bytes_left_limit);
         if (flag == -1) {
