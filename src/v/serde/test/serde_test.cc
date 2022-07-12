@@ -13,6 +13,7 @@
 #include "random/generators.h"
 #include "serde/envelope.h"
 #include "serde/serde.h"
+#include "serde/time_point.h"
 #include "tristate.h"
 #include "utils/fragmented_vector.h"
 
@@ -840,4 +841,45 @@ SEASTAR_THREAD_TEST_CASE(duration_type_test) {
     constexpr auto max_hrs = std::chrono::hours::max();
     BOOST_REQUIRE_THROW(serde_input(max_ms), serde::serde_exception);
     BOOST_REQUIRE_THROW(serde_input(max_hrs), serde::serde_exception);
+}
+
+SEASTAR_THREAD_TEST_CASE(time_point_type_test) {
+    using namespace std::literals;
+    using clock = ss::lowres_system_clock;
+
+    serde::time_point now = clock::now();
+    // Conversion operation and back.
+    clock::time_point t = now;
+    serde::time_point now2 = t;
+    BOOST_REQUIRE(now == serde_input(now));
+    BOOST_REQUIRE(now == serde_input(now2));
+
+    now = clock::now() - 24h;
+    BOOST_REQUIRE(now == serde_input(now));
+
+    serde::time_point made_up
+      = std::chrono::time_point<clock, std::chrono::duration<int, std::kilo>>{};
+    BOOST_REQUIRE(made_up == serde_input(made_up));
+
+    // Enclosing types.
+    struct outer : serde::envelope<outer, serde::version<0>> {
+        serde::time_point<clock::time_point> now = clock::now() + 24h;
+    };
+    outer o;
+    BOOST_REQUIRE(o == serde_input(o));
+
+    struct outer2 : serde::envelope<outer, serde::version<0>> {
+        clock::time_point tp;
+
+        auto serde_write(iobuf& out) {
+            serde::write(out, serde::time_point(tp));
+        }
+
+        auto serde_read(iobuf_parser& in, const serde::header& h) {
+            tp = serde::read_nested<serde::time_point<clock::time_point>>(
+              in, h._bytes_left_limit);
+        }
+    };
+    outer2 o2 = {.tp = clock::now() - 24h};
+    BOOST_REQUIRE(o2 == serde_input(o2));
 }
