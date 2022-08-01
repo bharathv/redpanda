@@ -10,7 +10,9 @@
  */
 #include "compat/run.h"
 
+#include "cluster/types.h"
 #include "compat/check.h"
+#include "compat/id_allocator_compat.h"
 #include "compat/metadata_dissemination_compat.h"
 #include "compat/raft_compat.h"
 #include "json/document.h"
@@ -36,7 +38,9 @@ using compat_checks = type_list<
   raft::install_snapshot_reply,
   raft::vote_request,
   raft::vote_reply,
-  cluster::update_leadership_request>;
+  cluster::update_leadership_request,
+  cluster::allocate_id_request,
+  cluster::allocate_id_reply>;
 
 struct compat_error final : public std::runtime_error {
 public:
