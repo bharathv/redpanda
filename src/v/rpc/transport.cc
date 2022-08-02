@@ -156,44 +156,33 @@ transport::make_response_handler(netbuf& b, const rpc::client_opts& opts) {
 
 ss::future<result<std::unique_ptr<streaming_context>>>
 transport::do_send(sequence_t seq, netbuf b, rpc::client_opts opts) {
-    using ret_t = result<std::unique_ptr<streaming_context>>;
     // hold invariant of always having a valid connection _and_ a working
     // dispatch gate where we can wait for async futures
     if (!is_valid() || _dispatch_gate.is_closed()) {
-        _last_seq = std::max(_last_seq, seq);
-        return ss::make_ready_future<ret_t>(errc::disconnected_endpoint);
+        maybe_update_last_seq(seq);
+        co_return errc::disconnected_endpoint;
     }
-    return ss::with_gate(
-      _dispatch_gate,
-      [this, b = std::move(b), opts = std::move(opts), seq]() mutable {
-          auto f = make_response_handler(b, opts);
-
-          // send
-          auto sz = b.buffer().size_bytes();
-          return get_units(_memory, sz)
-            .then([this,
-                   b = std::move(b),
-                   f = std::move(f),
-                   seq,
-                   u = std::move(opts.resource_units)](
-                    ssx::semaphore_units units) mutable {
-                auto e = entry{
-                  .buffer = std::make_unique<netbuf>(std::move(b)),
-                  .resource_units = std::move(u),
-                };
-
-                _requests_queue.emplace(
-                  seq, std::make_unique<entry>(std::move(e)));
-                dispatch_send();
-                return std::move(f).finally([u = std::move(units)] {});
-            })
-            .finally([this, seq] {
-                // update last sequence to make progress, for successfull
-                // dispatches this will be noop, as _last_seq was already update
-                // before sending data
-                _last_seq = std::max(_last_seq, seq);
-            });
-      });
+    ss::gate::holder guard{_dispatch_gate};
+    ssx::semaphore_units mem_units;
+    try {
+        mem_units = co_await get_units(_memory, b.buffer().size_bytes());
+    } catch (const ss::broken_semaphore&) {
+        maybe_update_last_seq(seq);
+        co_return errc::disconnected_endpoint;
+    }
+    auto f = make_response_handler(b, opts);
+    auto e = entry{
+      .buffer = std::make_unique<netbuf>(std::move(b)),
+      .resource_units = std::move(opts.resource_units),
+    };
+    _requests_queue.emplace(seq, std::make_unique<entry>(std::move(e)));
+    dispatch_send();
+    co_return co_await std::move(f).finally([&, seq = seq]() {
+        // update last sequence to make progress, for successful
+        // dispatches this will be noop, as _last_seq was already update
+        // before sending data
+        maybe_update_last_seq(seq);
+    });
 }
 
 void transport::dispatch_send() {
