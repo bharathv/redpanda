@@ -19,6 +19,7 @@
 #include "vlog.h"
 
 #include <seastar/core/coroutine.hh>
+#include <seastar/core/future.hh>
 #include <seastar/core/reactor.hh>
 #include <seastar/core/semaphore.hh>
 #include <seastar/core/timed_out_error.hh>
@@ -173,7 +174,7 @@ transport::do_send(sequence_t seq, netbuf b, rpc::client_opts opts) {
       .resource_units = std::move(opts.resource_units),
     };
     _requests_queue.emplace(seq, std::make_unique<entry>(std::move(e)));
-    dispatch_send();
+    dispatch_send(opts);
     co_return co_await std::move(f).finally([&, seq = seq]() {
         // update last sequence to make progress, for successful
         // dispatches this will be noop, as _last_seq was already update
@@ -182,33 +183,37 @@ transport::do_send(sequence_t seq, netbuf b, rpc::client_opts opts) {
     });
 }
 
-void transport::dispatch_send() {
+void transport::dispatch_send(const client_opts& opts) {
     ssx::background
-      = ssx::spawn_with_gate_then(_dispatch_gate, [this]() mutable {
-            return ss::do_until(
-              [this] {
-                  return _requests_queue.empty()
-                         || _requests_queue.begin()->first
-                              > (_last_seq + sequence_t(1));
-              },
-              [this] {
-                  auto it = _requests_queue.begin();
-                  _last_seq = it->first;
-                  auto buffer = std::move(it->second->buffer).get();
-                  auto units = std::move(it->second->resource_units);
-                  auto v = std::move(*buffer).as_scattered();
-                  auto msg_size = v.size();
-                  _requests_queue.erase(it->first);
-                  return _out.write(std::move(v))
-                    .finally([this, msg_size, units = std::move(units)] {
-                        _probe.add_bytes_sent(msg_size);
-                    });
-              });
-        }).handle_exception([this](std::exception_ptr e) {
-            vlog(rpclog.info, "Error dispatching socket write:{}", e);
-            _probe.request_error();
-            fail_outstanding_futures();
-        });
+      = ssx::spawn_with_gate_then(
+          _dispatch_gate,
+          [this, t = opts.timeout]() mutable {
+              return ss::do_until(
+                [this] {
+                    return _requests_queue.empty()
+                           || _requests_queue.begin()->first
+                                > (_last_seq + sequence_t(1));
+                },
+                [this, t = t] {
+                    auto it = _requests_queue.begin();
+                    _last_seq = it->first;
+                    auto buffer = std::move(it->second->buffer).get();
+                    auto units = std::move(it->second->resource_units);
+                    auto v = std::move(*buffer).as_scattered();
+                    auto msg_size = v.size();
+                    _requests_queue.erase(it->first);
+                    auto f = _out.write(std::move(v));
+                    return ss::with_timeout(t, std::move(f))
+                      .finally([this, msg_size, units = std::move(units)] {
+                          _probe.add_bytes_sent(msg_size);
+                      });
+                });
+          })
+          .handle_exception([this](std::exception_ptr e) {
+              vlog(rpclog.info, "Error dispatching socket write:{}", e);
+              _probe.request_error();
+              fail_outstanding_futures();
+          });
 }
 
 ss::future<> transport::do_reads() {
