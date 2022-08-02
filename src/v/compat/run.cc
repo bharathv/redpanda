@@ -40,7 +40,8 @@ using compat_checks = type_list<
   raft::vote_reply,
   cluster::update_leadership_request,
   cluster::allocate_id_request,
-  cluster::allocate_id_reply>;
+  cluster::allocate_id_reply,
+  cluster::update_leadership_request_v2>;
 
 struct compat_error final : public std::runtime_error {
 public:
