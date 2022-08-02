@@ -108,6 +108,10 @@ private:
     sequence_t _seq;
     sequence_t _last_seq;
 
+    void maybe_update_last_seq(sequence_t seq) {
+        _last_seq = std::max(_last_seq, seq);
+    }
+
     /*
      * version level used when dispatching requests. this value may change
      * during the lifetime of the transport. for example the version may be
