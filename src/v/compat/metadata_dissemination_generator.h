@@ -51,4 +51,6 @@ struct instance_generator<cluster::update_leadership_request_v2> {
     }
 };
 
+empty_compat_generator(cluster::update_leadership_reply);
+
 } // namespace compat
