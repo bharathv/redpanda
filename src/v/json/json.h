@@ -55,6 +55,10 @@ void rjson_serialize(
   json::Writer<json::StringBuffer>& w, const std::chrono::milliseconds& v);
 
 void rjson_serialize(
+  json::Writer<json::StringBuffer>& w,
+  const std::chrono::steady_clock::duration& v);
+
+void rjson_serialize(
   json::Writer<json::StringBuffer>& w, const std::chrono::seconds& v);
 
 void rjson_serialize(
