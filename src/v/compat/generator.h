@@ -11,6 +11,14 @@
 #pragma once
 #include <vector>
 
+// Utility to create a generator for empty objects.
+#define empty_compat_generator(class_name)                                     \
+    template<>                                                                 \
+    struct instance_generator<class_name> {                                    \
+        static class_name random() { return {}; }                              \
+        static std::vector<class_name> limits() { return {}; }                 \
+    };
+
 namespace compat {
 
 /*
