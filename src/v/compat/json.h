@@ -23,6 +23,10 @@ inline char const* to_str(rapidjson::Type const t) {
     return str[t];
 }
 
+inline void read_value(json::Value const& v, uint16_t& target) {
+    target = v.GetUint();
+}
+
 inline void read_value(json::Value const& v, int64_t& target) {
     target = v.GetInt64();
 }
@@ -61,6 +65,16 @@ inline void read_value(json::Value const& v, ss::sstring& target) {
 
 inline void read_value(json::Value const& v, iobuf& target) {
     target = bytes_to_iobuf(base64_to_bytes(v.GetString()));
+}
+
+inline void
+read_value(json::Value const& v, std::chrono::milliseconds& target) {
+    target = std::chrono::milliseconds(v.GetUint64());
+}
+
+inline void
+read_value(json::Value const& v, std::chrono::steady_clock::duration& target) {
+    target = std::chrono::steady_clock::duration(v.GetUint64());
 }
 
 template<typename T, typename Tag, typename IsConstexpr>
