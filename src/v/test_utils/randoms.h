@@ -68,4 +68,10 @@ inline std::chrono::milliseconds random_duration_ms() {
       0, std::chrono::milliseconds::max().count()));
 }
 
+template<typename Dur>
+inline Dur random_duration() {
+    return Dur(
+      random_generators::get_int<typename Dur::rep>(0, Dur::max().count()));
+}
+
 } // namespace tests
