@@ -2015,6 +2015,16 @@ void rm_stm::reconcile_mem_state() {
 
 ss::future<std::error_code>
 rm_stm::checkpoint_in_memory_state(mem_state&& state) {
+    if (unlikely(_mem_state.all_txns_count() > checkpoint_txns_limit)) {
+        vlog(
+          clusterlog.warn,
+          "Skipping checkpointing of in memory state as inflight transaction "
+          "count {} exceeds limit {}.",
+          _mem_state.inflight.size(),
+          checkpoint_txns_limit);
+        // This is on a best effort basis and we log and warn and continue.
+        co_return make_error_code(tx_errc::none);
+    }
     auto batch = co_await make_checkpoint_batch(std::move(state));
     auto reader = model::make_memory_record_batch_reader(std::move(batch));
     auto result = co_await _c->replicate(
