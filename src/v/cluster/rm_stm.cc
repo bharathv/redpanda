@@ -19,6 +19,7 @@
 #include "raft/types.h"
 #include "storage/parser_utils.h"
 #include "storage/record_batch_builder.h"
+#include "utils/human.h"
 
 #include <seastar/core/coroutine.hh>
 #include <seastar/core/future.hh>
@@ -2008,8 +2009,8 @@ void rm_stm::reconcile_mem_state() {
     }
     vlog(
       clusterlog.info,
-      "Successfully reconciled checkpointed state in term: {}",
-      _insync_term);
+      "Successfully reconciled checkpointed state: {}",
+      _mem_state);
 }
 
 ss::future<std::error_code>
@@ -2029,8 +2030,10 @@ rm_stm::checkpoint_in_memory_state(mem_state&& state) {
     }
     vlog(
       clusterlog.info,
-      "Replicated checkpoint state with term {}",
-      _insync_term);
+      "Replicated checkpoint state with term {}, records: {}, size: {}",
+      _insync_term,
+      batch.record_count(),
+      human::bytes(batch.size_bytes()));
     co_return make_error_code(tx_errc::none);
 }
 
