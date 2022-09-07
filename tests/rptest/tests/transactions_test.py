@@ -17,8 +17,11 @@ from rptest.tests.redpanda_test import RedpandaTest
 from rptest.services.rpk_consumer import RpkConsumer
 import confluent_kafka as ck
 from rptest.clients.kafka_cat import KafkaCat
+from rptest.services.admin import Admin
 
 import subprocess
+
+from rptest.clients.rpk import RpkTool
 
 
 class TransactionsTest(RedpandaTest):
@@ -249,3 +252,71 @@ class TransactionsTest(RedpandaTest):
             assert kafka_error.code() == ck.cimpl.KafkaError.FENCED_INSTANCE_ID
 
         producer.abort_transaction()
+
+    @cluster(num_nodes=3)
+    def delete_topic_with_active_txns_test(self):
+
+        rpk = RpkTool(self.redpanda)
+        admin = Admin(self.redpanda)
+        rpk.create_topic("t1")
+        rpk.create_topic("t2")
+
+        producer = ck.Producer({
+            'bootstrap.servers': self.redpanda.brokers(),
+            'transactional.id': '0',
+            'transaction.timeout.ms': 1000000,
+            'debug': 'all'
+        })
+
+        producer.init_transactions()
+        producer.begin_transaction()
+
+        def add_records(topic):
+            for i in range(0, 100):
+                producer.produce(topic,
+                                 str(i),
+                                 str(i),
+                                 partition=0,
+                                 on_delivery=self.on_delivery)
+            producer.flush()
+
+        add_records("t1")
+        add_records("t2")
+
+        rpk.delete_topic("t1")
+
+        try:
+            producer.commit_transaction()
+            assert False, "commit_tx did not throw"
+        except Exception as e:
+            self.redpanda.logger.error(e)
+
+        # Without fix
+        # [{
+        #	'transactional_id': '0',
+        #	'pid': {
+        #		'id': 1,
+        #		'epoch': 0
+        #	},
+        #	'tx_seq': 1,
+        #	'etag': 1,
+        #	'status': 'preparing',
+        #	'timeout_ms': 1000000,
+        #	'staleness_ms': 7,
+        #	'partitions': [{
+        #		'ns': 'kafka',
+        #		'topic': 't1',
+        #		'partition_id': 0,
+        #		'etag': 1
+        #	}, {
+        #		'ns': 'kafka',
+        #		'topic': 't2',
+        #		'partition_id': 0,
+        #		'etag': 1
+        #	}]
+        #}]
+        no_txns = lambda: len(admin.get_all_transactions()) == 0
+        wait_until_result(no_txns,
+                          timeout_sec=30,
+                          backoff_sec=2,
+                          err_msg=str(admin.get_all_transactions()))
