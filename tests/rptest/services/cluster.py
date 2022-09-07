@@ -36,7 +36,7 @@ def cluster(log_allow_list=None, check_allowed_error_logs=True, **kwargs):
             except:
                 self.redpanda.logger.exception(
                     "Test failed, doing failure checks...")
-                self.redpanda.decode_backtraces()
+                # self.redpanda.decode_backtraces()
                 self.redpanda.raise_on_crash()
                 raise
             else:
