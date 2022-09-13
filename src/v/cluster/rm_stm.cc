@@ -1896,7 +1896,17 @@ void rm_stm::apply_data(model::batch_identity bid, model::offset last_offset) {
     }
 }
 
-void rm_stm::apply_checkpoint(const model::record_batch&) {}
+void rm_stm::apply_checkpoint(const model::record_batch& batch) {
+    vassert(
+      batch.record_count() == 1, "Checkpoint batch with multiple records");
+
+    auto r = batch.copy_records();
+    auto& record = *r.begin();
+    auto val_buf = record.release_value();
+    auto state = serde::from_iobuf<mem_state>(std::move(val_buf));
+    _parked_checkpointed_mem_state = std::move(state);
+    vlog(clusterlog.info, "Parked checkpoint state.");
+}
 
 ss::future<model::record_batch>
 rm_stm::make_checkpoint_batch(mem_state&& state) {
@@ -1926,6 +1936,10 @@ rm_stm::checkpoint_in_memory_state(mem_state&& state) {
           result.error());
         co_return make_error_code(tx_errc::checkpoint_failed);
     }
+    vlog(
+      clusterlog.info,
+      "Replicated checkpoint state with term {}",
+      _insync_term);
     co_return make_error_code(tx_errc::none);
 }
 
