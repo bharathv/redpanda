@@ -285,11 +285,14 @@ tm_stm::do_update_tx(tm_transaction tx, model::term_id term) {
 ss::future<checked<tm_transaction, tm_stm::op_status>>
 tm_stm::mark_tx_preparing(
   model::term_id expected_term, kafka::transactional_id tx_id) {
-    auto ptx = _mem_txes.find(tx_id);
-    if (ptx == _mem_txes.end()) {
+    auto ptx = get_tx(tx_id);
+    if (!ptx) {
         co_return tm_stm::op_status::not_found;
     }
-    auto tx = ptx->second;
+    auto tx = ptx.value();
+    if (tx.etag != expected_term) {
+        co_return tm_stm::op_status::unknown;
+    }
     if (tx.status != tm_transaction::tx_status::ongoing) {
         co_return tm_stm::op_status::conflict;
     }
@@ -305,6 +308,9 @@ ss::future<checked<tm_transaction, tm_stm::op_status>> tm_stm::mark_tx_aborting(
         co_return tm_stm::op_status::not_found;
     }
     auto tx = ptx.value();
+    if (tx.etag != expected_term) {
+        co_return tm_stm::op_status::unknown;
+    }
     if (tx.status != tm_transaction::tx_status::ongoing) {
         co_return tm_stm::op_status::conflict;
     }
@@ -493,18 +499,17 @@ ss::future<tm_stm::op_status> tm_stm::do_register_new_producer(
 ss::future<tm_stm::op_status> tm_stm::add_partitions(
   kafka::transactional_id tx_id,
   std::vector<tm_transaction::tx_partition> partitions) {
-    auto ptx = _mem_txes.find(tx_id);
-    if (ptx == _mem_txes.end()) {
+    auto ptx = get_tx(tx_id);
+    if (!ptx) {
         co_return tm_stm::op_status::unknown;
     }
-    if (ptx->second.status != tm_transaction::tx_status::ongoing) {
+    auto tx = ptx.value();
+    if (tx.status != tm_transaction::tx_status::ongoing) {
         co_return tm_stm::op_status::unknown;
     }
-    bool just_started = ptx->second.partitions.size() == 0
-                        && ptx->second.groups.size() == 0;
+    bool just_started = tx.partitions.size() == 0 && tx.groups.size() == 0;
 
     if (just_started) {
-        tm_transaction tx = ptx->second;
         for (auto& partition : partitions) {
             tx.partitions.push_back(partition);
         }
@@ -519,9 +524,9 @@ ss::future<tm_stm::op_status> tm_stm::add_partitions(
     }
 
     for (auto& partition : partitions) {
-        ptx->second.partitions.push_back(partition);
+        tx.partitions.push_back(partition);
     }
-    ptx->second.last_update_ts = clock_type::now();
+    tx.last_update_ts = clock_type::now();
 
     co_return tm_stm::op_status::success;
 }
@@ -530,18 +535,17 @@ ss::future<tm_stm::op_status> tm_stm::add_group(
   kafka::transactional_id tx_id,
   kafka::group_id group_id,
   model::term_id term) {
-    auto ptx = _mem_txes.find(tx_id);
-    if (ptx == _mem_txes.end()) {
+    auto ptx = get_tx(tx_id);
+    if (!ptx) {
         co_return tm_stm::op_status::unknown;
     }
-    if (ptx->second.status != tm_transaction::tx_status::ongoing) {
+    auto tx = ptx.value();
+    if (tx.status != tm_transaction::tx_status::ongoing) {
         co_return tm_stm::op_status::unknown;
     }
-    bool just_started = ptx->second.partitions.size() == 0
-                        && ptx->second.groups.size() == 0;
+    bool just_started = tx.partitions.size() == 0 && tx.groups.size() == 0;
 
     if (just_started) {
-        tm_transaction tx = ptx->second;
         tx.groups.push_back(
           tm_transaction::tx_group{.group_id = group_id, .etag = term});
         tx.last_update_ts = clock_type::now();
@@ -554,9 +558,9 @@ ss::future<tm_stm::op_status> tm_stm::add_group(
         co_return tm_stm::op_status::success;
     }
 
-    ptx->second.groups.push_back(
+    tx.groups.push_back(
       tm_transaction::tx_group{.group_id = group_id, .etag = term});
-    ptx->second.last_update_ts = clock_type::now();
+    tx.last_update_ts = clock_type::now();
     co_return tm_stm::op_status::success;
 }
 
