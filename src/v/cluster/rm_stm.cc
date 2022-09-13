@@ -1512,7 +1512,26 @@ ss::future<bool> rm_stm::sync(model::timeout_clock::duration timeout) {
     auto ready = co_await persisted_stm::sync(timeout);
     if (ready) {
         if (_mem_state.term != _insync_term) {
+            // There is a term change, issue a checkpoint purge to followers
+            // All other replicate ops need to wait until this finishes, this is
+            // so that the followers clean up the state before we start applying
+            // changes to the in memory state.
+            auto current_term = _insync_term;
+            auto result = co_await _checkpoint_applied_replicate.with(
+              [this, current_term]() {
+                  if (!_c->is_leader() || current_term != _insync_term) {
+                      // Term changed meanwhile, perhaps triggered by other
+                      // fiber attempting to replicate a checkpoint applied
+                      // batch.
+                      return ss::make_ready_future<bool>(false);
+                  } else if (_mem_state.term == _insync_term) {
+                      // Some other fiber reset the state already, move on.
+                      return ss::make_ready_future<bool>(true);
+                  }
+                  return replicate_checkpoint_applied(_insync_term);
+              });
             _mem_state = mem_state{.term = _insync_term};
+            co_return result;
         }
     }
     co_return ready;
@@ -1780,6 +1799,8 @@ ss::future<> rm_stm::apply(model::record_batch b) {
         }
     } else if (hdr.type == model::record_batch_type::tx_checkpoint) {
         apply_checkpoint(b);
+    } else if (hdr.type == model::record_batch_type::tx_checkpoint_applied) {
+        apply_checkpoint_applied();
     }
     _insync_offset = last_offset;
 
@@ -1908,6 +1929,11 @@ void rm_stm::apply_checkpoint(const model::record_batch& batch) {
     vlog(clusterlog.info, "Parked checkpoint state.");
 }
 
+void rm_stm::apply_checkpoint_applied() {
+    _parked_checkpointed_mem_state = std::nullopt;
+    vlog(clusterlog.info, "Purged local parked checkpoint state.");
+}
+
 ss::future<model::record_batch>
 rm_stm::make_checkpoint_batch(mem_state&& state) {
     iobuf key;
@@ -1919,6 +1945,37 @@ rm_stm::make_checkpoint_batch(mem_state&& state) {
     builder.set_control_type();
     builder.add_raw_kv(std::move(key), std::move(val));
     co_return std::move(builder).build();
+}
+
+ss::future<model::record_batch>
+rm_stm::make_checkpoint_applied_batch(model::term_id term) {
+    iobuf key;
+    co_await serde::write_async(
+      key, model::record_batch_type::tx_checkpoint_applied);
+    storage::record_batch_builder builder(
+      model::record_batch_type::tx_checkpoint_applied, model::offset(0));
+    builder.set_control_type();
+    builder.add_raw_kv(std::move(key), iobuf{});
+    co_return std::move(builder).build();
+}
+
+ss::future<bool> rm_stm::replicate_checkpoint_applied(model::term_id term) {
+    auto batch = co_await make_checkpoint_applied_batch(term);
+    auto reader = model::make_memory_record_batch_reader(std::move(batch));
+    auto result = co_await _c->replicate(
+      term,
+      std::move(reader),
+      raft::replicate_options(raft::consistency_level::quorum_ack));
+    if (!result) {
+        vlog(
+          clusterlog.warn,
+          "Unable to replicate checkpoint applied batch {}, stepping down.",
+          result.error());
+        co_await _c->step_down();
+        co_return false;
+    }
+    vlog(clusterlog.info, "Issued checkpoint applied batch with term {}", term);
+    co_return true;
 }
 
 ss::future<std::error_code>

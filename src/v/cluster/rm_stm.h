@@ -346,6 +346,8 @@ private:
       apply_control(model::producer_identity, model::control_record_type);
     void apply_data(model::batch_identity, model::offset);
     void apply_checkpoint(const model::record_batch&);
+    // Applies tx_checkpoint_applied batch.
+    void apply_checkpoint_applied();
 
     ss::future<> reduce_aborted_list();
     ss::future<> offload_aborted_txns();
@@ -527,7 +529,12 @@ private:
 
     ss::future<std::error_code> checkpoint_in_memory_state(mem_state&&);
 
+    ss::future<bool> replicate_checkpoint_applied(model::term_id);
+
     ss::future<model::record_batch> make_checkpoint_batch(mem_state&&);
+
+    ss::future<model::record_batch>
+      make_checkpoint_applied_batch(model::term_id);
 
     uint8_t active_snapshot_version();
 
@@ -547,6 +554,10 @@ private:
     // promote this to _mem_state only if the current node becomes the partition
     // leader. Otherwise a purge batch will clean it up.
     std::optional<mem_state> _parked_checkpointed_mem_state;
+
+    // On assuming leadership, wait for followers to purge their in memory state
+    // before accepting new requests.
+    mutex _checkpoint_applied_replicate;
     ss::timer<clock_type> auto_abort_timer;
     model::timestamp _oldest_session;
     std::chrono::milliseconds _sync_timeout;
