@@ -167,11 +167,59 @@ ss::future<checked<model::term_id, tm_stm::op_status>> tm_stm::do_barrier() {
         });
 }
 
-ss::future<> tm_stm::checkpoint_ongoing_txs() { return ss::now(); }
+ss::future<> tm_stm::checkpoint_ongoing_txs() {
+    if (!use_new_tx_version()) {
+        co_return;
+    }
+    // Wait for all pending state changes to be applied.
+    if (!co_await wait_no_throw(_c->committed_offset(), _sync_timeout)) {
+        co_return;
+    }
+    std::vector<tm_transaction> all_txes;
+    all_txes.reserve(_mem_txes.size());
+
+    auto can_transfer = [](const tm_transaction& tx) {
+        return !tx.transferring
+               && (tx.status == tm_transaction::ready || tx.status == tm_transaction::ongoing);
+    };
+
+    // Loop through all ongoing/pending txns in memory and checkpoint.
+    for (auto& [_, tx] : _mem_txes) {
+        if (can_transfer(tx)) {
+            tx.transferring = true;
+            all_txes.push_back(tx);
+        }
+    }
+
+    for (auto& [_, tx] : _log_txes) {
+        if (can_transfer(tx)) {
+            tx.transferring = true;
+            all_txes.push_back(tx);
+        }
+    }
+
+    size_t checkpointed_txes = 0;
+    for (auto& tx : all_txes) {
+        tx.transferring = true;
+        auto result = co_await update_tx(tx, tx.etag);
+        if (!result.has_value()) {
+            break;
+        }
+        checkpointed_txes++;
+    }
+
+    vlog(
+      clusterlog.info,
+      "Checkpointed txes: {}, total: {}",
+      checkpointed_txes,
+      _mem_txes.size());
+}
 
 ss::future<std::error_code>
 tm_stm::transfer_leadership(std::optional<model::node_id> target) {
     auto units = co_await _state_lock.hold_write_lock();
+    // This is a best effort basis, we checkpoint as many as we can
+    // and stop at the first error.
     co_await checkpoint_ongoing_txs();
     co_return co_await _c->do_transfer_leadership(target);
 }
