@@ -264,8 +264,10 @@ private:
     std::chrono::milliseconds _sync_timeout;
     std::chrono::milliseconds _transactional_id_expiration;
     model::violation_recovery_policy _recovery_policy;
-    absl::flat_hash_map<kafka::transactional_id, tm_transaction> _log_txes;
-    absl::flat_hash_map<kafka::transactional_id, tm_transaction> _mem_txes;
+    using txes_type
+      = absl::flat_hash_map<kafka::transactional_id, tm_transaction>;
+    txes_type _log_txes;
+    txes_type _mem_txes;
     absl::flat_hash_map<model::producer_identity, kafka::transactional_id>
       _pid_tx_id;
     absl::flat_hash_map<kafka::transactional_id, ss::lw_shared_ptr<mutex>>
@@ -283,6 +285,8 @@ private:
       std::chrono::milliseconds,
       model::producer_identity);
     ss::future<stm_snapshot> do_take_snapshot();
+    // Low level iterator access to txns for direct updates.
+    std::optional<txes_type::iterator> do_get_tx_it(kafka::transactional_id);
 
     ss::future<checked<tm_transaction, tm_stm::op_status>>
       update_tx(tm_transaction, model::term_id);
