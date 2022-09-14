@@ -15,6 +15,7 @@
 #include "cluster/feature_table.h"
 #include "cluster/ntp_callbacks.h"
 #include "cluster/partition.h"
+#include "cluster/topic_table.h"
 #include "cluster/types.h"
 #include "model/fundamental.h"
 #include "model/metadata.h"
@@ -138,6 +139,16 @@ public:
         _unmanage_watchers.unregister_notify(id);
     }
 
+    notification_id_type
+    register_for_topic_table_updates(topic_table::delta_cb_t cb) {
+        return _topic_table_watchers.register_notify(std::move(cb));
+    }
+
+    void notify_tt_update(const std::vector<topic_table::delta>& deltas) {
+        // controller_ntp dummy placeholder.
+        _topic_table_watchers.notify(model::controller_ntp, deltas);
+    }
+
     /*
      * read-only interface to partitions.
      *
@@ -187,6 +198,9 @@ private:
 
     ntp_callbacks<manage_cb_t> _manage_watchers;
     ntp_callbacks<unmanage_cb_t> _unmanage_watchers;
+
+    ntp_callbacks<topic_table::delta_cb_t> _topic_table_watchers;
+
     // XXX use intrusive containers here
     ntp_table_container _ntp_table;
     absl::flat_hash_map<raft::group_id, ss::lw_shared_ptr<partition>>

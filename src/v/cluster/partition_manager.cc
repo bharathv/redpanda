@@ -57,7 +57,22 @@ partition_manager::partition_manager(
   , _partition_recovery_mgr(recovery_mgr)
   , _cloud_storage_api(cloud_storage_api)
   , _cloud_storage_cache(cloud_storage_cache)
-  , _feature_table(feature_table) {}
+  , _feature_table(feature_table) {
+    register_for_topic_table_updates(
+      [](const std::vector<topic_table::delta>& deltas) {
+          for (auto& delta : deltas) {
+              if (delta.type == topic_table::delta::op_type::add) {
+                  vlog(
+                    clusterlog.info,
+                    "partition_manager--> added: {}",
+                    delta.ntp);
+              } else if (delta.type == topic_table::delta::op_type::del) {
+                  vlog(
+                    clusterlog.info, "partition_manager--> del: {}", delta.ntp);
+              }
+          }
+      });
+}
 
 partition_manager::ntp_table_container
 partition_manager::get_topic_partition_table(
