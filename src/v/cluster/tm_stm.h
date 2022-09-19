@@ -163,13 +163,14 @@ public:
 
     explicit tm_stm(ss::logger&, raft::consensus*, ss::sharded<feature_table>&);
 
-    std::optional<tm_transaction> get_tx(kafka::transactional_id);
-    checked<tm_transaction, tm_stm::op_status>
-      mark_tx_ongoing(kafka::transactional_id);
+    ss::future<std::optional<tm_transaction>>
+    get_tx(const kafka::transactional_id&);
+    ss::future<checked<tm_transaction, tm_stm::op_status>>
+    mark_tx_ongoing(const kafka::transactional_id&);
     // mark_xxx: updates a transaction if the term matches etag
     // reset_xxx: updates a transaction and an etag
-    checked<tm_transaction, tm_stm::op_status>
-      reset_tx_ongoing(kafka::transactional_id, model::term_id);
+    ss::future<checked<tm_transaction, tm_stm::op_status>>
+    reset_tx_ongoing(const kafka::transactional_id&, model::term_id);
     ss::future<tm_stm::op_status> add_partitions(
       kafka::transactional_id, std::vector<tm_transaction::tx_partition>);
     ss::future<tm_stm::op_status>
