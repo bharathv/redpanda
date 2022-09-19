@@ -225,7 +225,8 @@ public:
       kafka::transactional_id,
       std::chrono::milliseconds,
       model::producer_identity);
-    ss::future<> expire_tx(kafka::transactional_id);
+    ss::future<> do_expire_tx(tm_transaction);
+    ss::future<> expire_tx(const kafka::transactional_id&);
 
     bool is_expired(const tm_transaction&);
 
@@ -281,6 +282,7 @@ private:
       std::chrono::milliseconds,
       model::producer_identity);
     ss::future<stm_snapshot> do_take_snapshot();
+    std::optional<tm_transaction> do_get_tx(const kafka::transactional_id&);
 
     ss::future<checked<tm_transaction, tm_stm::op_status>>
       update_tx(tm_transaction, model::term_id);
