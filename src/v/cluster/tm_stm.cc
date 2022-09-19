@@ -117,17 +117,69 @@ tm_stm::tm_stm(
       config::shard_local_cfg().tm_violation_recovery_policy.value())
   , _feature_table(feature_table) {}
 
-ss::future<std::optional<tm_transaction>>
-tm_stm::get_tx(kafka::transactional_id tx_id) {
+std::optional<tm_transaction> tm_stm::do_get_tx(kafka::transactional_id tx_id) {
     auto tx = _mem_txes.find(tx_id);
     if (tx != _mem_txes.end()) {
-        co_return tx->second;
+        return tx->second;
     }
     tx = _log_txes.find(tx_id);
     if (tx != _log_txes.end()) {
-        co_return tx->second;
+        return tx->second;
     }
-    co_return std::nullopt;
+    return std::nullopt;
+}
+
+ss::future<std::optional<tm_transaction>>
+tm_stm::get_tx(kafka::transactional_id tx_id) {
+    auto tx_opt = do_get_tx(tx_id);
+    if (!tx_opt) {
+        // not found.
+        co_return tx_opt;
+    }
+    auto tx = tx_opt.value();
+    if (
+      tx.status != tm_transaction::tx_status::ready
+      && tx.status != tm_transaction::tx_status::ongoing) {
+        co_return tx_opt;
+    }
+    // Check if transferring.
+    // We have 4 combinations here for
+    // transferring and etag/term match.
+    //
+    // transferring = tx->transferring
+    // term match = tx.etag == _insync_term
+    // +-------------------------+------+-------+
+    // | transferring/term match | True | False |
+    // +-------------------------+------+-------+
+    // | True                    |    1 |     2 |
+    // | False                   |    3 |     4 |
+    // +-------------------------+------+-------+
+
+    // case 1 - Unlikely, just reset the transferring flag.
+    // case 2 - Valid, txn is getting transferred from previous term.
+    // case 3 - Valid, the current term has already reset etag, so just return.
+    // case 4 - Invalid, just return and wait for it to fail in the next term
+    // check.
+    if (tx.transferring) {
+        if (tx.etag == _insync_term) {
+            // case 1
+            vlog(
+              clusterlog.warn,
+              "tx: {} transferring within same term: {}, resetting.",
+              tx_id,
+              tx.etag);
+        }
+        // case 2
+        tx.etag = _insync_term;
+        tx.transferring = false;
+        auto r = co_await update_tx(tx, tx.etag);
+        if (!r.has_value()) {
+            co_return std::nullopt;
+        }
+        co_return r.value();
+    }
+    // case 3, 4
+    co_return tx;
 }
 
 ss::future<checked<model::term_id, tm_stm::op_status>> tm_stm::barrier() {
@@ -272,7 +324,7 @@ tm_stm::do_update_tx(tm_transaction tx, model::term_id term) {
         co_return tm_stm::op_status::unknown;
     }
 
-    auto tx_opt = co_await get_tx(tx.id);
+    auto tx_opt = do_get_tx(tx.id);
     if (!tx_opt.has_value()) {
         co_return tm_stm::op_status::conflict;
     }
