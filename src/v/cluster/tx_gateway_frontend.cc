@@ -398,7 +398,7 @@ ss::future<try_abort_reply> tx_gateway_frontend::do_try_abort(
     if (term_opt.value() != expected_term) {
         co_return try_abort_reply{tx_errc::unknown_server_error};
     }
-    auto tx_opt = stm->get_tx(tx_id);
+    auto tx_opt = co_await stm->get_tx(tx_id);
     if (!tx_opt) {
         co_return try_abort_reply::make_aborted();
     }
@@ -459,7 +459,7 @@ tx_gateway_frontend::do_commit_tm_tx(
         co_return tx_errc::invalid_txn_state;
     }
     auto term = term_opt.value();
-    auto tx_opt = stm->get_tx(tx_id);
+    auto tx_opt = co_await stm->get_tx(tx_id);
     if (!tx_opt.has_value()) {
         co_return tx_errc::invalid_txn_state;
     }
@@ -771,7 +771,7 @@ ss::future<cluster::init_tm_tx_reply> tx_gateway_frontend::do_init_tm_tx(
         co_return init_tm_tx_reply{tx_errc::invalid_txn_state};
     }
     auto term = term_opt.value();
-    auto tx_opt = stm->get_tx(tx_id);
+    auto tx_opt = co_await stm->get_tx(tx_id);
 
     if (!tx_opt.has_value()) {
         allocate_id_reply pid_reply
@@ -1303,7 +1303,7 @@ tx_gateway_frontend::do_end_txn(
         co_return tx_errc::invalid_txn_state;
     }
     auto term = term_opt.value();
-    auto tx_opt = stm->get_tx(request.transactional_id);
+    auto tx_opt = co_await stm->get_tx(request.transactional_id);
 
     if (!tx_opt.has_value()) {
         outcome->set_value(tx_errc::invalid_producer_id_mapping);
@@ -1375,7 +1375,7 @@ tx_gateway_frontend::do_end_txn(
     }
     tx = r.value();
 
-    auto ongoing_tx = stm->mark_tx_ongoing(tx.id);
+    auto ongoing_tx = co_await stm->mark_tx_ongoing(tx.id);
     if (!ongoing_tx.has_value()) {
         co_return tx_errc::unknown_server_error;
     }
@@ -1642,7 +1642,7 @@ tx_gateway_frontend::get_ongoing_tx(
   model::producer_identity pid,
   kafka::transactional_id tx_id,
   model::timeout_clock::duration timeout) {
-    auto tx_opt = stm->get_tx(tx_id);
+    auto tx_opt = co_await stm->get_tx(tx_id);
     if (!tx_opt.has_value()) {
         co_return tx_errc::invalid_producer_id_mapping;
     }
@@ -1721,7 +1721,7 @@ tx_gateway_frontend::get_ongoing_tx(
         }
     }
 
-    auto ongoing_tx = stm->reset_tx_ongoing(tx.id, expected_term);
+    auto ongoing_tx = co_await stm->reset_tx_ongoing(tx.id, expected_term);
     if (!ongoing_tx.has_value()) {
         co_return tx_errc::invalid_txn_state;
     }
@@ -1831,7 +1831,7 @@ ss::future<> tx_gateway_frontend::do_expire_old_tx(
         co_return;
     }
     auto term = term_opt.value();
-    auto tx_opt = stm->get_tx(tx_id);
+    auto tx_opt = co_await stm->get_tx(tx_id);
     if (!tx_opt) {
         // either timeout or already expired
         co_return;
