@@ -129,6 +129,17 @@ std::optional<tm_transaction> tm_stm::do_get_tx(kafka::transactional_id tx_id) {
     return std::nullopt;
 }
 
+std::optional<tm_stm::txes_type::iterator>
+tm_stm::do_get_tx_it(kafka::transactional_id tx_id) {
+    std::optional<txes_type::iterator> r = {};
+    if (_mem_txes.contains(tx_id)) {
+        r = _mem_txes.find(tx_id);
+    } else if (_log_txes.contains(tx_id)) {
+        r = _log_txes.find(tx_id);
+    }
+    return r;
+}
+
 ss::future<std::optional<tm_transaction>>
 tm_stm::get_tx(kafka::transactional_id tx_id) {
     auto tx_opt = do_get_tx(tx_id);
@@ -568,15 +579,18 @@ ss::future<tm_stm::op_status> tm_stm::add_partitions(
         if (!r.has_value()) {
             co_return tm_stm::op_status::unknown;
         }
-        _mem_txes[tx_id] = tx;
         co_return tm_stm::op_status::success;
     }
 
+    auto tx_it = do_get_tx_it(tx_id);
+    if (!tx_it) {
+        // Unlikely to happen.
+        co_return tm_stm::op_status::unknown;
+    }
     for (auto& partition : partitions) {
-        tx.partitions.push_back(partition);
+        tx_it.value()->second.partitions.push_back(partition);
     }
     tx.last_update_ts = clock_type::now();
-
     co_return tm_stm::op_status::success;
 }
 
@@ -603,13 +617,17 @@ ss::future<tm_stm::op_status> tm_stm::add_group(
         if (!r.has_value()) {
             co_return tm_stm::op_status::unknown;
         }
-        _mem_txes[tx_id] = tx;
         co_return tm_stm::op_status::success;
     }
 
-    tx.groups.push_back(
+    auto tx_it = do_get_tx_it(tx_id);
+    if (!tx_it) {
+        // Unlikely to happen.
+        co_return tm_stm::op_status::unknown;
+    }
+    tx_it.value()->second.groups.push_back(
       tm_transaction::tx_group{.group_id = group_id, .etag = term});
-    tx.last_update_ts = clock_type::now();
+    tx_it.value()->second.last_update_ts = clock_type::now();
     co_return tm_stm::op_status::success;
 }
 
