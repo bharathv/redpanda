@@ -131,6 +131,9 @@ std::optional<tm_transaction> tm_stm::do_get_tx(kafka::transactional_id tx_id) {
 
 ss::future<std::optional<tm_transaction>>
 tm_stm::get_tx(kafka::transactional_id tx_id) {
+    if (!co_await sync(_sync_timeout)) {
+        co_return std::nullopt;
+    }
     auto tx_opt = do_get_tx(tx_id);
     if (!tx_opt) {
         // not found.
