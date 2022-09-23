@@ -65,6 +65,11 @@ public:
     // lets the stm control snapshotting and log eviction by limiting
     // log eviction attempts to offsets not greater than this.
     virtual model::offset max_collectible_offset() = 0;
+
+    // Only valid for state machines maintaining transactional state.
+    // Returns aborted transactions in range [from, to] offsets.
+    virtual ss::future<std::vector<model::tx_range>>
+      aborted_tx_ranges(model::offset, model::offset) = 0;
 };
 
 /**
@@ -118,6 +123,22 @@ public:
             result = std::min(result, stm->max_collectible_offset());
         }
         return result;
+    }
+
+    ss::future<std::vector<model::tx_range>>
+    aborted_tx_ranges(model::offset to, model::offset from) {
+        std::vector<model::tx_range> result;
+        for (const auto& stm : _stms) {
+            auto ranges = co_await stm->aborted_tx_ranges(to, from);
+            if (!ranges.empty()) {
+                result.reserve(ranges.size());
+                result.insert(
+                  result.end(),
+                  std::make_move_iterator(ranges.begin()),
+                  std::make_move_iterator(ranges.end()));
+            }
+        }
+        co_return result;
     }
 
 private:

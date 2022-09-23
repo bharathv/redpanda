@@ -173,6 +173,11 @@ public:
         return last_stable_offset();
     }
 
+    ss::future<std::vector<model::tx_range>>
+    aborted_tx_ranges(model::offset from, model::offset to) override {
+        return aborted_transactions(from, to);
+    }
+
     kafka_stages replicate_in_stages(
       model::batch_identity,
       model::record_batch_reader,
