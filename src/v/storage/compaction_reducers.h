@@ -145,4 +145,26 @@ private:
     compacted_index_writer* _w;
 };
 
+class transactional_reducer : public compaction_reducer {
+public:
+    explicit transactional_reducer(
+      std::vector<model::tx_range>&& txs, compacted_index_writer* w) noexcept
+      : _delegate(index_rebuilder_reducer(w))
+      , _aborted_txs(model::tx_range_cmp(), std::move(txs)) {}
+    ss::future<ss::stop_iteration> operator()(model::record_batch&&);
+    void end_of_stream() {}
+
+private:
+    index_rebuilder_reducer _delegate;
+    using underlying_t = std::priority_queue<
+      model::tx_range,
+      std::vector<model::tx_range>,
+      model::tx_range_cmp>;
+    underlying_t _aborted_txs;
+    absl::flat_hash_map<model::producer_identity, model::tx_range>
+      _ongoing_committed_txs;
+    absl::flat_hash_map<model::producer_identity, model::tx_range>
+      _ongoing_aborted_txs;
+};
+
 } // namespace storage::internal

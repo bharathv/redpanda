@@ -293,4 +293,10 @@ ss::future<> index_rebuilder_reducer::do_index(model::record_batch&& b) {
           });
     });
 }
+
+ss::future<ss::stop_iteration>
+transactional_reducer::operator()(model::record_batch&& b) {
+    co_return co_await _delegate(std::move(b));
+}
+
 } // namespace storage::internal

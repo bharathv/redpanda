@@ -499,15 +499,18 @@ ss::future<std::optional<size_t>> do_self_compact_segment(
 
 ss::future<> rebuild_compaction_index(
   model::record_batch_reader rdr,
+  std::vector<model::tx_range>&& aborted_txs,
   std::filesystem::path p,
   compaction_config cfg,
   storage_resources& resources) {
     return make_compacted_index_writer(p, cfg.sanitize, cfg.iopc, resources)
-      .then([r = std::move(rdr)](compacted_index_writer w) mutable {
+      .then([r = std::move(rdr),
+             txs = std::move(aborted_txs)](compacted_index_writer w) mutable {
           auto u = std::make_unique<compacted_index_writer>(std::move(w));
           auto ptr = u.get();
           return std::move(r)
-            .consume(index_rebuilder_reducer(ptr), model::no_timeout)
+            .consume(
+              transactional_reducer(std::move(txs), ptr), model::no_timeout)
             .then_wrapped([x = std::move(u)](ss::future<> fut) mutable {
                 return x->close()
                   .handle_exception([](std::exception_ptr e) {
@@ -567,9 +570,12 @@ ss::future<compaction_result> self_compact_segment(
         vlog(gclog.info, "Rebuilding index file... ({})", idx_path);
         pb.corrupted_compaction_index();
         auto h = co_await s->read_lock();
-
+        // TODO: Improve memory management here, eg: ton of aborted txs?
+        auto aborted_txs = co_await stm_manager->aborted_tx_ranges(
+          s->offsets().base_offset, s->offsets().stable_offset);
         co_await rebuild_compaction_index(
           create_segment_full_reader(s, cfg, pb, std::move(h)),
+          std::move(aborted_txs),
           idx_path,
           cfg,
           resources);
