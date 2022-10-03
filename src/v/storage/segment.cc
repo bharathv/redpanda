@@ -381,6 +381,20 @@ ss::future<> segment::compaction_index_batch(const model::record_batch& b) {
         return ss::now();
     }
 
+    if (b.header().attrs.is_transactional()) {
+        // With transactional batches, we do not know ahead of time whether the
+        // batch will be committed or aborted. We may not have this information
+        // during the lifetime of this segment as the batch may be aborted in
+        // the next segment. We mark this index as `incomplete` and rebuild it
+        // later from scratch during compaction.
+        return ss::do_with(
+          std::exchange(_compaction_index, std::nullopt), [](auto& index) {
+              index->set_flag(compacted_index::footer_flags::incomplete);
+              vlog(stlog.info, "closing compaction index");
+              return index->close();
+          });
+    }
+
     if (!b.compressed()) {
         return do_compaction_index_batch(b);
     }
