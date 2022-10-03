@@ -522,6 +522,7 @@ ss::future<> rebuild_compaction_index(
 
 ss::future<compaction_result> self_compact_segment(
   ss::lw_shared_ptr<segment> s,
+  ss::lw_shared_ptr<storage::stm_manager> stm_manager,
   compaction_config cfg,
   storage::probe& pb,
   storage::readers_cache& readers_cache,
@@ -578,7 +579,7 @@ ss::future<compaction_result> self_compact_segment(
           "rebuilt index: {}, attempting compaction again",
           idx_path);
         co_return co_await self_compact_segment(
-          s, cfg, pb, readers_cache, resources);
+          s, stm_manager, cfg, pb, readers_cache, resources);
     }
     }
     __builtin_unreachable();
