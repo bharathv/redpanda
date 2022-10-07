@@ -137,15 +137,20 @@ struct linear_int_kv_batch_generator {
     }
 
     ss::circular_buffer<model::record_batch> operator()() {
-        ss::circular_buffer<model::record_batch> ret;
-        ret.reserve(batches_per_call);
         auto batch_spec = model::test::record_batch_spec{
           .allow_compression = false,
           .count = records_per_batch,
           .bt = model::record_batch_type::raft_data,
         };
-        for (int i = 0; i < batches_per_call; i++) {
-            ret.push_back(make_batch(batch_spec, _idx++));
+        return operator()(batch_spec, batches_per_call);
+    }
+
+    ss::circular_buffer<model::record_batch>
+    operator()(model::test::record_batch_spec spec, int num_batches) {
+        ss::circular_buffer<model::record_batch> ret;
+        ret.reserve(num_batches);
+        for (int i = 0; i < num_batches; i++) {
+            ret.push_back(make_batch(spec, _idx++));
         }
         return ret;
     }
