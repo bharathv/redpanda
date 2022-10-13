@@ -30,10 +30,19 @@ class CompactionEndToEndTest(EndToEndTest):
         # we use small partition count to make the segment count grow faster
         self.partition_count = 2
 
-        # setup redpanda to speed up compaction
-        self.start_redpanda(num_nodes=3)
+        # Can be removed once transactions are enabled by default.
+        enable_transactions = {
+            "enable_idempotence": True,
+            "enable_transactions": True,
+            "transaction_coordinator_replication": 3,
+            "id_allocator_replication": 3,
+        }
 
-    def start_workload(self, key_set_cardinality, initial_cleanup_policy):
+        # setup redpanda to speed up compaction
+        self.start_redpanda(num_nodes=3, extra_rp_conf=enable_transactions)
+
+    def start_workload(self, key_set_cardinality, initial_cleanup_policy,
+                       tx_enabled, tx_inject_aborts):
         # create topic with deletion policy
         spec = TopicSpec(partition_count=self.partition_count,
                          replication_factor=3,
@@ -43,7 +52,9 @@ class CompactionEndToEndTest(EndToEndTest):
         self.topic = spec.name
         self.start_producer(num_nodes=1,
                             throughput=self.throughput,
-                            repeating_keys=key_set_cardinality)
+                            repeating_keys=key_set_cardinality,
+                            transactional=tx_enabled,
+                            tx_inject_aborts=tx_inject_aborts)
 
     def topic_segments(self):
         storage = self.redpanda.node_storage(self.redpanda.nodes[0])
@@ -55,9 +66,12 @@ class CompactionEndToEndTest(EndToEndTest):
     @matrix(key_set_cardinality=[10, 1000, 10000],
             initial_cleanup_policy=[
                 TopicSpec.CLEANUP_COMPACT, TopicSpec.CLEANUP_DELETE
-            ])
+            ],
+            transactions=[True, False],
+            tx_inject_aborts=[True, False])
     def test_basic_compaction(self, key_set_cardinality,
-                              initial_cleanup_policy):
+                              initial_cleanup_policy, transactions,
+                              tx_inject_aborts):
         '''
         Basic end to end compaction logic test. The test verifies if last value 
         consumed for each key matches the last produced value for the same key. 
@@ -67,12 +81,19 @@ class CompactionEndToEndTest(EndToEndTest):
         This way the test validates both recovery and inflight generation 
         of compaction indices.
         '''
+
+        if not transactions and tx_inject_aborts:
+            # Not a valid combination
+            cleanup_on_early_exit(self)
+            return
+
         # skip debug mode tests for keys with high cardinality
         if key_set_cardinality > 10 and self.debug_mode:
             cleanup_on_early_exit(self)
             return
 
-        self.start_workload(key_set_cardinality, initial_cleanup_policy)
+        self.start_workload(key_set_cardinality, initial_cleanup_policy,
+                            transactions, tx_inject_aborts)
         rpk = RpkTool(self.redpanda)
         cfgs = rpk.describe_topic_configs(self.topic)
         self.logger.debug(f"Initial topic {self.topic} configuration: {cfgs}")
@@ -116,6 +137,6 @@ class CompactionEndToEndTest(EndToEndTest):
                    backoff_sec=2)
 
         # enable consumer and validate consumed records
-        self.start_consumer(num_nodes=1)
+        self.start_consumer(num_nodes=1, verify_offsets=False)
 
         self.run_validation(enable_compaction=True)
