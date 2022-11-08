@@ -1645,11 +1645,17 @@ model::offset rm_stm::last_stable_offset() {
     }
 
     auto last_visible_index = _c->last_visible_index();
-    if (first_tx_start <= last_visible_index) {
-        return first_tx_start;
-    }
+    auto result = first_tx_start <= last_visible_index
+                    ? first_tx_start
+                    : model::next_offset(last_visible_index);
 
-    return model::next_offset(last_visible_index);
+    // We cannot exceed the last applied offset to account for correct
+    // tracking of aborted transactions state. This is not a problem in
+    // normal operation of the partition but if a compaction kicks in
+    // while the partition is still bootstrapping (ex: after a transfer),
+    // not all changes may be applied by the time one queries for LSO.
+    // Doing so results in compaction seeing an incomplete log state.
+    return std::min(result, next_offset_to_apply());
 }
 
 static void filter_intersecting(
