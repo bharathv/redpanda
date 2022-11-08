@@ -337,7 +337,18 @@ bool tx_reducer::handle_tx_control_batch(const model::record_batch& b) {
         break;
     }
     case model::control_record_type::tx_abort: {
-        _ongoing_aborted_txs.erase(pid);
+        if (!_ongoing_aborted_txs.erase(pid)) {
+            // This highly likely points to a bug with incorrect aborted tx
+            // range considered for this segment compaction. We likely retained
+            // aborted data batches for this pid with offsets close to
+            // base_offset().
+            // TODO: Propagate this as an error in compaction instead.
+            vlog(
+              stlog.error,
+              "No ongoing aborted tx found for pid {}, offset {}",
+              pid,
+              b.base_offset());
+        }
         break;
     }
     }
