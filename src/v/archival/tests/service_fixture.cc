@@ -506,3 +506,40 @@ storage::disk_log_builder make_log_builder(std::string_view data_path) {
       storage::debug_sanitize_files::yes,
     }};
 }
+
+ss::future<archival::ntp_archiver::batch_result> do_upload_next(
+  archival::ntp_archiver& archiver,
+  std::optional<model::offset> lso,
+  model::timeout_clock::time_point deadline) {
+    if (model::timeout_clock::now() > deadline) {
+        co_return archival::ntp_archiver::batch_result{};
+    }
+    auto result = co_await archiver.upload_next_candidates(lso);
+    auto num_success = result.compacted_upload_result.num_succeeded
+                       + result.non_compacted_upload_result.num_succeeded;
+    if (num_success > 0) {
+        co_return result;
+    }
+    co_await ss::sleep(10ms);
+    co_return co_await do_upload_next(archiver, lso, deadline);
+}
+
+ss::future<archival::ntp_archiver::batch_result> upload_next_with_retries(
+  archival::ntp_archiver& archiver, std::optional<model::offset> lso) {
+    auto deadline = model::timeout_clock::now() + 10s;
+    return ss::with_timeout(deadline, do_upload_next(archiver, lso, deadline));
+}
+
+void upload_and_verify(
+  archival::ntp_archiver& archiver,
+  archival::ntp_archiver::batch_result expected,
+  std::optional<model::offset> lso) {
+    tests::cooperative_spin_wait_with_timeout(
+      10s,
+      [&archiver, expected, lso]() {
+          return archiver.upload_next_candidates(lso).then(
+            [expected](auto result) { return result == expected; });
+          ;
+      })
+      .get0();
+}

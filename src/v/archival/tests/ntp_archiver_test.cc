@@ -85,22 +85,6 @@ void log_upload_candidate(const archival::upload_candidate& up) {
       first_source->offsets().dirty_offset);
 }
 
-ss::future<ntp_archiver::batch_result> upload_next_with_retries(
-  archival::ntp_archiver& archiver,
-  std::optional<model::offset> lso = std::nullopt) {
-    ntp_archiver::batch_result result{};
-    co_await tests::cooperative_spin_wait_with_timeout(
-      10s, [&result, &archiver, lso] {
-          return archiver.upload_next_candidates(lso).then([&result](auto res) {
-              result = res;
-              // Wait for atleast one successful upload.
-              return result.compacted_upload_result.num_succeeded
-                       + result.non_compacted_upload_result.num_succeeded
-                     > 0;
-          });
-      });
-    co_return result;
-}
 
 // NOLINTNEXTLINE
 FIXTURE_TEST(test_upload_segments, archiver_fixture) {
@@ -619,7 +603,7 @@ FIXTURE_TEST(test_upload_segments_leadership_transfer, archiver_fixture) {
 
     retry_chain_node fib;
 
-    auto res = archiver.upload_next_candidates().get();
+    auto res = upload_next_with_retries(archiver).get0();
 
     auto non_compacted_result = res.non_compacted_upload_result;
     auto compacted_result = res.compacted_upload_result;
@@ -838,7 +822,7 @@ static void test_partial_upload_impl(
     retry_chain_node fib;
     test.reset_http_call_state();
 
-    auto res = archiver.upload_next_candidates(lso).get();
+    auto res = upload_next_with_retries(archiver, lso).get0();
 
     auto non_compacted_result = res.non_compacted_upload_result;
     auto compacted_result = res.compacted_upload_result;
@@ -878,7 +862,7 @@ static void test_partial_upload_impl(
     }
 
     lso = last_upl2 + model::offset(1);
-    res = archiver.upload_next_candidates(lso).get();
+    res = upload_next_with_retries(archiver, lso).get0();
 
     non_compacted_result = res.non_compacted_upload_result;
     compacted_result = res.compacted_upload_result;
