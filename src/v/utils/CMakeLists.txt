@@ -8,6 +8,7 @@ v_cc_library(
     file_io.cc
     base64.cc
     retry_chain_node.cc
+    tracking_allocator.cc
     vint.cc
     directory_walker.cc
     uuid.cc
