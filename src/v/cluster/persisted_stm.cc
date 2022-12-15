@@ -31,7 +31,7 @@ persisted_stm::persisted_stm(
   , _c(c)
   , _snapshot_mgr(
       std::filesystem::path(c->log_config().work_directory()),
-      snapshot_mgr_name,
+      std::move(snapshot_mgr_name),
       ss::default_priority_class())
   , _log(logger) {}
 
@@ -93,7 +93,6 @@ ss::future<> persisted_stm::wait_for_snapshot_hydrated() {
 ss::future<> persisted_stm::persist_snapshot(
   storage::simple_snapshot_manager& snapshot_mgr, stm_snapshot&& snapshot) {
     iobuf data_size_buf;
-
     int8_t version = snapshot_version;
     int64_t offset = snapshot.header.offset();
     int8_t data_version = snapshot.header.version;
@@ -101,28 +100,12 @@ ss::future<> persisted_stm::persist_snapshot(
     reflection::serialize(
       data_size_buf, version, offset, data_version, data_size);
 
-    return snapshot_mgr.start_snapshot().then(
-      [&snapshot_mgr,
-       snapshot = std::move(snapshot),
-       data_size_buf = std::move(data_size_buf)](
-        storage::snapshot_writer writer) mutable {
-          return ss::do_with(
-            std::move(writer),
-            [&snapshot_mgr,
-             snapshot = std::move(snapshot),
-             data_size_buf = std::move(data_size_buf)](
-              storage::snapshot_writer& writer) mutable {
-                return writer.write_metadata(std::move(data_size_buf))
-                  .then([&writer, snapshot = std::move(snapshot)]() mutable {
-                      return write_iobuf_to_output_stream(
-                        std::move(snapshot.data), writer.output());
-                  })
-                  .finally([&writer] { return writer.close(); })
-                  .then([&snapshot_mgr, &writer] {
-                      return snapshot_mgr.finish_snapshot(writer);
-                  });
-            });
-      });
+    auto writer = co_await snapshot_mgr.start_snapshot();
+    co_await writer.write_metadata(std::move(data_size_buf));
+    co_await write_iobuf_to_output_stream(
+      std::move(snapshot.data), writer.output())
+      .finally([&writer] { return writer.close(); });
+    co_await snapshot_mgr.finish_snapshot(writer);
 }
 
 ss::future<> persisted_stm::persist_snapshot(stm_snapshot&& snapshot) {
@@ -142,33 +125,26 @@ void persisted_stm::make_snapshot_in_background() {
 }
 
 ss::future<> persisted_stm::make_snapshot() {
-    return _op_lock.with([this]() {
-        auto f = wait_for_snapshot_hydrated();
-        return f.then([this] { return do_make_snapshot(); });
-    });
+    auto units = _op_lock.get_units();
+    co_await wait_for_snapshot_hydrated();
+    co_await do_make_snapshot();
 }
 
 ss::future<>
 persisted_stm::ensure_snapshot_exists(model::offset target_offset) {
-    return _op_lock.with([this, target_offset]() {
-        auto f = wait_for_snapshot_hydrated();
-
-        return f.then([this, target_offset] {
-            if (target_offset <= _last_snapshot_offset) {
-                return ss::now();
-            }
-            return wait(target_offset, model::no_timeout)
-              .then([this, target_offset]() {
-                  vassert(
-                    target_offset <= _insync_offset,
-                    "after we waited for target_offset ({}) _insync_offset "
-                    "({}) should have matched it or bypassed",
-                    target_offset,
-                    _insync_offset);
-                  return do_make_snapshot();
-              });
-        });
-    });
+    auto units = co_await _op_lock.get_units();
+    co_await wait_for_snapshot_hydrated();
+    if (target_offset <= _last_snapshot_offset) {
+        co_return;
+    }
+    co_await wait(target_offset, model::no_timeout);
+    vassert(
+      target_offset <= _insync_offset,
+      "after we waited for target_offset ({}) _insync_offset "
+      "({}) should have matched it or bypassed",
+      target_offset,
+      _insync_offset);
+    co_await do_make_snapshot();
 }
 
 model::offset persisted_stm::max_collectible_offset() {
