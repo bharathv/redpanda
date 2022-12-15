@@ -92,6 +92,7 @@ ss::future<> persisted_stm::wait_for_snapshot_hydrated() {
 
 ss::future<> persisted_stm::persist_snapshot(
   storage::simple_snapshot_manager& snapshot_mgr, stm_snapshot&& snapshot) {
+    auto holder = _gate.hold();
     iobuf data_size_buf;
     int8_t version = snapshot_version;
     int64_t offset = snapshot.header.offset();
@@ -125,6 +126,7 @@ void persisted_stm::make_snapshot_in_background() {
 }
 
 ss::future<> persisted_stm::make_snapshot() {
+    auto holder = _gate.hold();
     auto units = _op_lock.get_units();
     co_await wait_for_snapshot_hydrated();
     co_await do_make_snapshot();
@@ -132,6 +134,7 @@ ss::future<> persisted_stm::make_snapshot() {
 
 ss::future<>
 persisted_stm::ensure_snapshot_exists(model::offset target_offset) {
+    auto holder = _gate.hold();
     auto units = co_await _op_lock.get_units();
     co_await wait_for_snapshot_hydrated();
     if (target_offset <= _last_snapshot_offset) {
@@ -318,6 +321,7 @@ ss::future<bool> persisted_stm::wait_no_throw(
 }
 
 ss::future<> persisted_stm::start() {
+    auto holder = _gate.hold();
     std::optional<stm_snapshot> maybe_snapshot;
     try {
         maybe_snapshot = co_await load_snapshot();

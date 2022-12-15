@@ -2606,6 +2606,7 @@ ss::future<> rm_stm::offload_aborted_txns() {
 // DO NOT coroutinize this method as it may cause issues on ARM:
 // https://github.com/redpanda-data/redpanda/issues/6768
 ss::future<stm_snapshot> rm_stm::take_snapshot() {
+    auto holder = _gate.hold();
     auto start_offset = _raft->start_offset();
 
     std::vector<abort_index> abort_indexes;
