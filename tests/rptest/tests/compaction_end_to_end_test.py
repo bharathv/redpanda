@@ -7,6 +7,8 @@
 # the Business Source License, use of this software will be governed
 # by the Apache License, Version 2.0
 
+import os
+import time
 import sys
 from ducktape.mark import matrix
 from ducktape.utils.util import wait_until
@@ -64,17 +66,25 @@ class CompactionEndToEndTest(EndToEndTest):
 
         return [len(p.segments) for p in topic_partitions]
 
+    def topic_files(self):
+        storage = self.redpanda.node_storage(self.redpanda.nodes[0])
+        topic_partitions = storage.partitions("kafka", self.topic)
+        result = []
+        for p in topic_partitions:
+            result += self.redpanda.nodes[0].account.sftp_client.listdir(p.path)
+        self.logger.info(f"topic files: {result}")
+        return result
+
+
     @cluster(num_nodes=5, log_allow_list=RESTART_LOG_ALLOW_LIST)
     # sys.maxsize is a special high cardinality case where no keys should be
     # compacted away. With transactions enabled, all the aborted batches
     # should be compacted away from the log and should not show up in
     # consumed list.
-    @matrix(key_set_cardinality=[10, sys.maxsize],
-            initial_cleanup_policy=[
-                TopicSpec.CLEANUP_COMPACT, TopicSpec.CLEANUP_DELETE
-            ],
-            transactions=[True, False],
-            tx_inject_aborts=[True, False])
+    @matrix(key_set_cardinality=[10],
+            initial_cleanup_policy=[TopicSpec.CLEANUP_DELETE],
+            transactions=[False],
+            tx_inject_aborts=[False])
     def test_basic_compaction(self, key_set_cardinality,
                               initial_cleanup_policy, transactions,
                               tx_inject_aborts):
@@ -145,15 +155,12 @@ class CompactionEndToEndTest(EndToEndTest):
             # make compaction frequent
             rpk.cluster_config_set("log_compaction_interval_ms", str(3000))
 
-            wait_until(lambda: segment_number_matches(lambda s: s < 5),
-                       timeout_sec=timeout_sec,
-                       backoff_sec=2)
+            # Wait until compaction kicks in
+            time.sleep(30)
 
-            # enable consumer and validate consumed records
-            self.start_consumer(num_nodes=1, verify_offsets=False)
-            self.run_validation(enable_compaction=True,
-                                enable_transactions=transactions,
-                                consumer_timeout_sec=timeout_sec)
+            rpk.delete_topic(self.topic)
+            wait_until(lambda: self.topic_files() == 0, timeout_sec=10, backoff_sec=2)
+
         except BaseException:
             self._collect_segment_data()
             raise

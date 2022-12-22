@@ -567,7 +567,7 @@ ss::future<compaction_result> disk_log_impl::compact_adjacent_segments(
     auto gen_it = generations.begin();
     for (const auto& segment : segments) {
         // check generation id under write lock
-        if (unlikely(segment->get_generation_id() != *gen_it)) {
+        if (unlikely(segment->get_generation_id() != *gen_it) || true) {
             vlog(
               gclog.info,
               "Aborting compaction of a segment: {}. Generation id mismatch, "
