@@ -57,6 +57,8 @@ public:
     ss::future<> remove(model::node_id n);
 
     /// \brief closes all connections
+    ss::future<> shutdown();
+
     ss::future<> stop();
 
     /**

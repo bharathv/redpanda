@@ -151,6 +151,10 @@ void application::shutdown() {
         _rpc.invoke_on_all(&rpc::rpc_server::shutdown_input).get();
     }
 
+    if (_connection_cache.local_is_initialized()) {
+        _connection_cache.invoke_on_all(&rpc::connection_cache::shutdown).get();
+    }
+
     // We schedule shutting down controller input and aborting its operation as
     // one of the first shutdown steps. This way we terminate all long running
     // operations before shutting down the RPC server, preventing it from
