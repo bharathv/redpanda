@@ -1620,9 +1620,23 @@ ss::future<> controller_backend::remove_from_shard_table(
   model::ntp ntp, raft::group_id raft_group, model::revision_id revision) {
     // update shard_table: broadcast
 
+    auto invoking_shard = ss::this_shard_id();
     return _shard_table.invoke_on_all(
-      [ntp = std::move(ntp), raft_group, revision](shard_table& s) mutable {
-          s.erase(ntp, raft_group, revision);
+      [ntp = std::move(ntp), raft_group, revision, invoking_shard](
+        shard_table& s) mutable {
+          auto shard = s.shard_for(ntp);
+          // This check skips the removal if another shard already took over
+          // the partition ownership. This happens when bootstrapping with
+          // updates/cancellations of a xcore requests across multiple shards
+          // in parallel.
+          // Ex: add(ntp), update(shard 0 -> shard 1)
+          // In this case, we do not want update on shard 0 to remove the
+          // update on shard 1 as both have same revision. This happens because
+          // the bootstrapping is not coordinated and the shard table updates
+          // are potentially interleaved.
+          if (likely(shard && *shard == invoking_shard)) {
+              s.erase(ntp, raft_group, revision);
+          }
       });
 }
 
