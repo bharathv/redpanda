@@ -66,6 +66,9 @@ class fragmented_vector {
 public:
     using this_type = fragmented_vector<T, max_fragment_size>;
     using value_type = T;
+    using reference = T&;
+    using const_reference = const T&;
+    using size_type = size_t;
 
     /**
      * The maximum number of bytes per fragment as specified in
@@ -84,14 +87,15 @@ public:
 
     fragmented_vector copy() const noexcept { return *this; }
 
-    void push_back(T elem) {
+    template<class E = T>
+    void push_back(E&& elem) {
         if (_size == _capacity) {
             std::vector<T> frag;
             frag.reserve(elems_per_frag);
             _frags.push_back(std::move(frag));
             _capacity += elems_per_frag;
         }
-        _frags.back().push_back(elem);
+        _frags.back().push_back(std::forward<E>(elem));
         ++_size;
     }
 
@@ -115,6 +119,7 @@ public:
         return const_cast<T&>(std::as_const(*this)[index]);
     }
 
+    const T& front() const { return _frags.front().front(); }
     const T& back() const { return _frags.back().back(); }
     bool empty() const noexcept { return _size == 0; }
     size_t size() const noexcept { return _size; }

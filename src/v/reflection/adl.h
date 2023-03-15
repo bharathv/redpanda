@@ -33,6 +33,8 @@ struct adl {
     static constexpr bool is_optional = is_std_optional<type>;
     static constexpr bool is_sstring = std::is_same_v<type, ss::sstring>;
     static constexpr bool is_vector = is_std_vector<type>;
+    static constexpr bool is_fragmented_vector
+      = reflection::is_fragmented_vector<type>;
     static constexpr bool is_named_type = is_rp_named_type<type>;
     static constexpr bool is_iobuf = std::is_same_v<type, iobuf>;
     static constexpr bool is_standard_layout = std::is_standard_layout_v<type>;
@@ -83,6 +85,15 @@ struct adl {
             int32_t n = in.template consume_type<int32_t>();
             std::vector<value_type> ret;
             ret.reserve(n);
+            while (n-- > 0) {
+                ret.push_back(adl<value_type>{}.from(in));
+            }
+            return ret;
+        } else if constexpr (is_fragmented_vector) {
+            using value_type = typename type::value_type;
+            using size_type = typename type::size_type;
+            size_type n = in.template consume_type<size_type>();
+            fragmented_vector<value_type> ret;
             while (n-- > 0) {
                 ret.push_back(adl<value_type>{}.from(in));
             }
@@ -149,6 +160,19 @@ struct adl {
         } else if constexpr (is_vector) {
             using value_type = typename type::value_type;
             adl<int32_t>{}.to(out, t.size());
+            for (value_type& i : t) {
+                adl<value_type>{}.to(out, std::move(i));
+            }
+            return;
+        } else if constexpr (is_fragmented_vector) {
+            using value_type = typename type::value_type;
+            using size_type = typename type::size_type;
+            static_assert(
+              std::is_same_v<
+                size_type,
+                typename std::vector<value_type>::size_type>,
+              "Size type mismatch with vector of same value_type");
+            adl<size_type>{}.to(out, t.size());
             for (value_type& i : t) {
                 adl<value_type>{}.to(out, std::move(i));
             }

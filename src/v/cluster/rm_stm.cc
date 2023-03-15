@@ -238,25 +238,25 @@ struct seq_entry_v1 {
 struct tx_snapshot_v1 {
     static constexpr uint8_t version = 1;
 
-    std::vector<model::producer_identity> fenced;
-    std::vector<rm_stm::tx_range> ongoing;
-    std::vector<rm_stm::prepare_marker> prepared;
-    std::vector<rm_stm::tx_range> aborted;
-    std::vector<rm_stm::abort_index> abort_indexes;
+    fragmented_vector<model::producer_identity> fenced;
+    fragmented_vector<rm_stm::tx_range> ongoing;
+    fragmented_vector<rm_stm::prepare_marker> prepared;
+    fragmented_vector<rm_stm::tx_range> aborted;
+    fragmented_vector<rm_stm::abort_index> abort_indexes;
     model::offset offset;
-    std::vector<seq_entry_v1> seqs;
+    fragmented_vector<seq_entry_v1> seqs;
 };
 
 struct tx_snapshot_v2 {
     static constexpr uint8_t version = 2;
 
-    std::vector<model::producer_identity> fenced;
-    std::vector<rm_stm::tx_range> ongoing;
-    std::vector<rm_stm::prepare_marker> prepared;
-    std::vector<rm_stm::tx_range> aborted;
-    std::vector<rm_stm::abort_index> abort_indexes;
+    fragmented_vector<model::producer_identity> fenced;
+    fragmented_vector<rm_stm::tx_range> ongoing;
+    fragmented_vector<rm_stm::prepare_marker> prepared;
+    fragmented_vector<rm_stm::tx_range> aborted;
+    fragmented_vector<rm_stm::abort_index> abort_indexes;
     model::offset offset;
-    std::vector<rm_stm::seq_entry> seqs;
+    fragmented_vector<rm_stm::seq_entry> seqs;
 };
 
 rm_stm::rm_stm(
@@ -1883,8 +1883,8 @@ model::offset rm_stm::last_stable_offset() {
 }
 
 static void filter_intersecting(
-  std::vector<rm_stm::tx_range>& target,
-  const std::vector<rm_stm::tx_range>& source,
+  fragmented_vector<rm_stm::tx_range>& target,
+  const fragmented_vector<rm_stm::tx_range>& source,
   model::offset from,
   model::offset to) {
     for (auto& range : source) {
@@ -1898,7 +1898,7 @@ static void filter_intersecting(
     }
 }
 
-ss::future<std::vector<rm_stm::tx_range>>
+ss::future<fragmented_vector<rm_stm::tx_range>>
 rm_stm::aborted_transactions(model::offset from, model::offset to) {
     return _state_lock.hold_read_lock().then(
       [from, to, this](ss::basic_rwlock<>::holder unit) mutable {
@@ -1907,9 +1907,9 @@ rm_stm::aborted_transactions(model::offset from, model::offset to) {
       });
 }
 
-ss::future<std::vector<rm_stm::tx_range>>
+ss::future<fragmented_vector<rm_stm::tx_range>>
 rm_stm::do_aborted_transactions(model::offset from, model::offset to) {
-    std::vector<rm_stm::tx_range> result;
+    fragmented_vector<rm_stm::tx_range> result;
     if (!_is_tx_enabled) {
         co_return result;
     }
@@ -1922,7 +1922,7 @@ rm_stm::do_aborted_transactions(model::offset from, model::offset to) {
             continue;
         }
         if (_log_state.last_abort_snapshot.match(idx)) {
-            auto opt = _log_state.last_abort_snapshot;
+            auto& opt = _log_state.last_abort_snapshot;
             filter_intersecting(result, opt.aborted, from, to);
         } else {
             intersecting_idxes.push_back(idx);
@@ -2469,12 +2469,12 @@ rm_stm::apply_snapshot(stm_snapshot_header hdr, iobuf&& tx_ss_buf) {
         data.seqs = std::move(data_v2.seqs);
 
         for (auto& entry : data_v2.prepared) {
-            data.tx_seqs.emplace_back(tx_snapshot::tx_seqs_snapshot{
+            data.tx_seqs.push_back(tx_snapshot::tx_seqs_snapshot{
               .pid = entry.pid, .tx_seq = entry.tx_seq});
         }
 
         for (auto& entry : data_v2.seqs) {
-            data.tx_seqs.emplace_back(tx_snapshot::tx_seqs_snapshot{
+            data.tx_seqs.push_back(tx_snapshot::tx_seqs_snapshot{
               .pid = entry.pid, .tx_seq = model::tx_seq(entry.seq)});
         }
     } else if (hdr.version == tx_snapshot_v1::version) {
@@ -2505,7 +2505,7 @@ rm_stm::apply_snapshot(stm_snapshot_header hdr, iobuf&& tx_ss_buf) {
         }
 
         for (auto& entry : data_v1.prepared) {
-            data.tx_seqs.emplace_back(tx_snapshot::tx_seqs_snapshot{
+            data.tx_seqs.push_back(tx_snapshot::tx_seqs_snapshot{
               .pid = entry.pid, .tx_seq = entry.tx_seq});
         }
     } else if (hdr.version == tx_snapshot_v0::version) {
@@ -2520,7 +2520,7 @@ rm_stm::apply_snapshot(stm_snapshot_header hdr, iobuf&& tx_ss_buf) {
             data.seqs.push_back(std::move(seq));
         }
         for (auto& entry : data_v0.prepared) {
-            data.tx_seqs.emplace_back(tx_snapshot::tx_seqs_snapshot{
+            data.tx_seqs.push_back(tx_snapshot::tx_seqs_snapshot{
               .pid = entry.pid, .tx_seq = entry.tx_seq});
         }
     } else {
@@ -2538,10 +2538,11 @@ rm_stm::apply_snapshot(stm_snapshot_header hdr, iobuf&& tx_ss_buf) {
     for (auto& entry : data.prepared) {
         _log_state.prepared.emplace(entry.pid, entry);
     }
-    _log_state.aborted.insert(
-      _log_state.aborted.end(),
-      std::make_move_iterator(data.aborted.begin()),
-      std::make_move_iterator(data.aborted.end()));
+    for (auto it = std::make_move_iterator(data.aborted.begin());
+         it != std::make_move_iterator(data.aborted.end());
+         it++) {
+        _log_state.aborted.push_back(*it);
+    }
     co_await ss::max_concurrent_for_each(
       data.abort_indexes, 32, [this](const abort_index& idx) -> ss::future<> {
           auto f_name = abort_idx_name(idx.first, idx.last);
@@ -2551,10 +2552,12 @@ rm_stm::apply_snapshot(stm_snapshot_header hdr, iobuf&& tx_ss_buf) {
                   std::make_pair(idx.first, idx.last), snapshot_size);
             });
       });
-    _log_state.abort_indexes.insert(
-      _log_state.abort_indexes.end(),
-      std::make_move_iterator(data.abort_indexes.begin()),
-      std::make_move_iterator(data.abort_indexes.end()));
+
+    for (auto it = std::make_move_iterator(data.abort_indexes.begin());
+         it != std::make_move_iterator(data.abort_indexes.end());
+         it++) {
+        _log_state.abort_indexes.push_back(*it);
+    }
     for (auto& entry : data.seqs) {
         const auto pid = entry.pid;
         auto it = _log_state.seq_table.find(pid);
@@ -2576,7 +2579,7 @@ rm_stm::apply_snapshot(stm_snapshot_header hdr, iobuf&& tx_ss_buf) {
     if (last.last > model::offset(0)) {
         auto snapshot_opt = co_await load_abort_snapshot(last);
         if (snapshot_opt) {
-            _log_state.last_abort_snapshot = snapshot_opt.value();
+            _log_state.last_abort_snapshot = std::move(snapshot_opt.value());
         }
     }
 
@@ -2677,12 +2680,12 @@ ss::future<> rm_stm::offload_aborted_txns() {
             auto idx = abort_index{
               .first = snapshot.first, .last = snapshot.last};
             _log_state.abort_indexes.push_back(idx);
-            co_await save_abort_snapshot(snapshot);
+            co_await save_abort_snapshot(std::move(snapshot));
             snapshot = abort_snapshot{
               .first = model::offset::max(), .last = model::offset::min()};
         }
     }
-    _log_state.aborted = snapshot.aborted;
+    _log_state.aborted = std::move(snapshot.aborted);
 }
 
 // DO NOT coroutinize this method as it may cause issues on ARM:
@@ -2825,11 +2828,11 @@ uint64_t rm_stm::get_snapshot_size() const {
     return persisted_stm::get_snapshot_size() + abort_snapshots_size;
 }
 
-ss::future<> rm_stm::save_abort_snapshot(abort_snapshot snapshot) {
+ss::future<> rm_stm::save_abort_snapshot(abort_snapshot&& snapshot) {
     auto filename = abort_idx_name(snapshot.first, snapshot.last);
     vlog(_ctx_log.debug, "saving abort snapshot {} at {}", snapshot, filename);
     iobuf snapshot_data;
-    reflection::adl<abort_snapshot>{}.to(snapshot_data, snapshot);
+    reflection::adl<abort_snapshot>{}.to(snapshot_data, std::move(snapshot));
     int32_t snapshot_size = snapshot_data.size_bytes();
 
     auto writer = co_await _abort_snapshot_mgr.start_snapshot(filename);
