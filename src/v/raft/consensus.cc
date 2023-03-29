@@ -1221,6 +1221,65 @@ consensus::abort_configuration_change(model::revision_id revision) {
     co_return errc::success;
 }
 
+template<typename Func>
+ss::future<std::error_code>
+consensus::force_replace_configuration_locally(Func&& f) {
+    return _op_lock.get_units()
+      .then([this, f = std::forward<Func>(f)](ssx::semaphore_units u) mutable {
+          auto latest_cfg = config();
+          maybe_upgrade_configuration_to_v4(latest_cfg);
+          result<group_configuration> res = f(std::move(latest_cfg));
+          if (res) {
+              if (res.value().revision_id() < config().revision_id()) {
+                  return ss::make_ready_future<std::error_code>(
+                    errc::invalid_configuration_update);
+              }
+              auto new_cfg = res.value();
+              vlog(
+                _ctxlog.info,
+                "Force replacing configuration with: {}",
+                new_cfg);
+              auto batches = details::serialize_configuration_as_batches(
+                std::move(new_cfg));
+              for (auto& b : batches) {
+                  b.set_term(_term);
+              };
+
+              return disk_append(
+                       model::make_memory_record_batch_reader(
+                         std::move(batches)),
+                       update_last_quorum_index::yes)
+                .then([this, u = std::move(u)](
+                        storage::append_result append_result) mutable {
+                    vlog(
+                      _ctxlog.debug,
+                      "appended reconfiguration to force update replica set at "
+                      "offset {}",
+                      append_result.base_offset);
+                    // flush log as all configuration changes must eventually be
+                    // committed.
+                    return flush_log().then([u = std::move(u)]() mutable {
+                        return ss::make_ready_future<std::error_code>(
+                          errc::success);
+                    });
+                });
+          }
+          return ss::make_ready_future<std::error_code>(res.error());
+      })
+      .handle_exception_type([](const ss::broken_semaphore&) {
+          return make_error_code(errc::shutting_down);
+      });
+}
+
+ss::future<std::error_code> consensus::force_replace_configuration_locally(
+  std::vector<vnode> nodes, model::revision_id new_revision) {
+    return force_replace_configuration_locally(
+      [nodes = std::move(nodes), new_revision](group_configuration) mutable {
+          using ret_t = result<group_configuration>;
+          return ret_t{group_configuration(std::move(nodes), new_revision)};
+      });
+}
+
 ss::future<> consensus::start() {
     return ss::try_with_gate(_bg, [this] { return do_start(); });
 }
