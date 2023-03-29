@@ -421,8 +421,8 @@ bool is_interrupting_operation(
      * Find interrupting operation following the one that is currently
      * processed. Following rules apply:
      *
-     * - all operations i.e. update, cancel_update, and force abort must be
-     * interrupted by deletion
+     * - all operations i.e. update, force_update, cancel_update, and force
+     * abort must be interrupted by deletion.
      *
      * - update & cancel update operations may be interrupted by
      * force_abort_update operation
@@ -649,11 +649,40 @@ ss::future<> controller_backend::fetch_deltas() {
 }
 
 ss::future<std::error_code> controller_backend::force_replica_set_update(
-  const model::ntp&,
-  const std::vector<model::broker_shard>&,
-  const replicas_revision_map&,
-  model::revision_id) {
-    co_return errc::success;
+  const model::ntp& ntp,
+  const std::vector<model::broker_shard>& replicas,
+  const replicas_revision_map& replica_revisions,
+  model::revision_id rev) {
+    if (!has_local_replicas(_self, replicas)) {
+        // This node will no longer be a part of the raft group,
+        // will be cleaned up as a part of update_finished command.
+        co_return errc::success;
+    }
+
+    auto partition = _partition_manager.local().get(ntp);
+    if (!partition) {
+        co_return errc::partition_not_exists;
+    }
+
+    const auto current_cfg = partition->group_configuration();
+
+    // wait for configuration update, only declare success
+    // when configuration was actually updated
+    auto update_ec = check_configuration_update(
+      _self, partition, replicas, rev);
+
+    if (!update_ec) {
+        co_return errc::success;
+    }
+
+    // Unlikely, do not issue the command twice.
+    if (current_cfg.revision_id() == rev) {
+        co_return errc::waiting_for_recovery;
+    }
+
+    // Congiguration revision is lower, force update locally.
+    co_return co_await partition->force_update_replica_set(
+      create_vnode_set(replicas, replica_revisions), rev);
 }
 
 /**
@@ -1100,6 +1129,23 @@ controller_backend::process_partition_reconfiguration(
           target_assignment.replicas);
         co_return std::error_code(errc::success);
     }
+
+    if (type == topic_table_delta::op_type::force_update) {
+        if (
+          partition
+          && partition->group_configuration().revision_id() >= command_rev) {
+            vlog(
+              clusterlog.trace,
+              "[{}] finishing force_update current group configuration "
+              "revision: {} command_rev {}, "
+              "reconfigured to replicas: {}",
+              ntp,
+              partition->group_configuration().revision_id(),
+              command_rev,
+              target_assignment.replicas);
+            co_return std::error_code(errc::success);
+        }
+    }
     /**
      * Check if target assignment has node and core local replicas
      */
@@ -1123,6 +1169,12 @@ controller_backend::process_partition_reconfiguration(
         if (contains_node(target_assignment.replicas, _self)) {
             co_return co_await shutdown_on_current_shard(
               std::move(ntp), command_rev);
+        }
+
+        if (type == topic_table_delta::op_type::force_update) {
+            // Any cleanup for shard local replicas happens via update_finished
+            // commands triggered as a result of successful force_update.
+            co_return errc::success;
         }
 
         /**
@@ -1315,6 +1367,12 @@ bool controller_backend::can_finish_update(
     // force abort update may be finished by any node
     if (update_type == topic_table_delta::op_type::force_abort_update) {
         return true;
+    }
+
+    if (update_type == topic_table_delta::op_type::force_update) {
+        // Pick the first node to issue an update_finished
+        // once succeeded.
+        return current_replicas.front().node_id == _self;
     }
     /**
      * If the revert feature is active we use current leader to dispatch
