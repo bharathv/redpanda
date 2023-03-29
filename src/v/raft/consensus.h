@@ -141,6 +141,15 @@ public:
     ss::future<std::error_code>
       replace_configuration(std::vector<vnode>, model::revision_id);
 
+    /**
+     * Force appends a new configuration to the local log with provided
+     * replicas. This is unclean by design and can cause a data loss. Should
+     * only be used in exceptional circumstances trying to recover from a lost
+     * majority.
+     */
+    ss::future<std::error_code> force_replace_configuration_locally(
+      std::vector<vnode>, model::revision_id);
+
     // Abort ongoing configuration change - may cause data loss
     ss::future<std::error_code> abort_configuration_change(model::revision_id);
     // Revert current configuration change - this is safe and will never cause
@@ -546,6 +555,9 @@ private:
     template<typename Func>
     ss::future<std::error_code>
       interrupt_configuration_change(model::revision_id, Func);
+
+    template<typename Func>
+    ss::future<std::error_code> force_replace_configuration_locally(Func&&);
 
     ss::future<> maybe_commit_configuration(ssx::semaphore_units);
     void maybe_promote_to_voter(vnode);
