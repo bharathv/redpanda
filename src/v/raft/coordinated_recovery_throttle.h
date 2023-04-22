@@ -12,6 +12,7 @@
 
 #include "config/configuration.h"
 #include "seastarx.h"
+#include "ssx/metrics.h"
 #include "utils/token_bucket.h"
 
 #include <seastar/core/sharded.hh>
@@ -57,6 +58,8 @@ public:
     size_t waiting_bytes() const { return _throttler.waiting_bytes(); }
     size_t admitted_bytes() const { return _throttler.admitted_bytes(); }
 
+    void setup_metrics();
+
 private:
     using clock_t = ss::lowres_clock;
     static constexpr ss::shard_id _coordinator_shard = ss::shard_id{0};
@@ -74,12 +77,16 @@ private:
         inline size_t admitted_bytes() const {
             return _admitted_bytes_since_last_reset;
         }
+        inline size_t last_reset_capacity() const {
+            return _last_reset_capacity;
+        }
         inline size_t available() const { return _sem.current(); }
 
     private:
         ssx::named_semaphore<> _sem;
         size_t _waiting_bytes{0};
         size_t _admitted_bytes_since_last_reset{0};
+        size_t _last_reset_capacity;
     };
 
     inline size_t fair_rate_per_shard() const {
@@ -100,6 +107,10 @@ private:
     token_bucket _throttler;
     ss::gate _gate;
     ss::timer<clock_t> _coordinator;
+
+    ss::metrics::metric_groups _internal_metrics;
+    ss::metrics::metric_groups _public_metrics{
+      ssx::metrics::public_metrics_handle};
 };
 
 } // namespace raft
