@@ -3465,7 +3465,12 @@ std::ostream& operator<<(std::ostream&, const node_update_type&);
  * Reconfiguration state indicates if ongoing reconfiguration is a result of
  * partition movement, cancellation or forced cancellation
  */
-enum class reconfiguration_state { in_progress, cancelled, force_cancelled };
+enum class reconfiguration_state {
+    in_progress,
+    force_update,
+    cancelled,
+    force_cancelled
+};
 
 std::ostream& operator<<(std::ostream&, reconfiguration_state);
 
