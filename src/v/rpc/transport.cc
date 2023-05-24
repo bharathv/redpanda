@@ -234,12 +234,18 @@ transport::do_send(sequence_t seq, netbuf b, rpc::client_opts opts) {
           auto sz = b.buffer().size_bytes();
           auto corr = b.correlation_id();
           return get_units(_memory, sz)
-            .then([b = std::move(b)](ssx::semaphore_units units) mutable {
+            .then([b = std::move(b), corr](ssx::semaphore_units units) mutable {
                 return std::move(b).as_scattered().then(
-                  [u = std::move(units)](
+                  [u = std::move(units), corr](
                     ss::scattered_message<char> scattered_message) mutable {
-                      return std::make_tuple(
-                        std::move(u), std::move(scattered_message));
+                      // This delays dispatch_send() of the timed_out rpc
+                      // corr == 6 is the corr_idx of the rpc in the test.
+                      auto f = corr == 6 ? ss::sleep(2s) : ss::now();
+                      return std::move(f).then(
+                        [u = std::move(u),
+                         m = std::move(scattered_message)]() mutable {
+                            return std::make_tuple(std::move(u), std::move(m));
+                        });
                   });
             })
             .then_unpack(
@@ -256,9 +262,11 @@ transport::do_send(sequence_t seq, netbuf b, rpc::client_opts opts) {
                           std::move(scattered_message)),
                         .correlation_id = corr};
 
+                      vlog(rpclog.info, "Putting seq {} in request queue", seq);
+
                       _requests_queue.emplace(
                         seq, std::make_unique<entry>(std::move(e)));
-                      dispatch_send();
+                      dispatch_send(seq);
                   }
                   return std::move(f).finally([u = std::move(units)] {});
               })
@@ -267,15 +275,21 @@ transport::do_send(sequence_t seq, netbuf b, rpc::client_opts opts) {
                 // dispatches this will be noop, as _last_seq was already update
                 // before sending data
                 _last_seq = std::max(_last_seq, seq);
+                vlog(rpclog.info, "Setting _last_seq to {}", _last_seq);
             });
       });
 }
 
-void transport::dispatch_send() {
+void transport::dispatch_send(sequence_t trigger) {
     ssx::background
-      = ssx::spawn_with_gate_then(_dispatch_gate, [this]() mutable {
+      = ssx::spawn_with_gate_then(_dispatch_gate, [this, trigger]() mutable {
             return ss::do_until(
-              [this] {
+              [this, trigger] {
+                  vlog(
+                    rpclog.info,
+                    "is empty: {}, _last_seq {}, trigger: {}",
+                    _requests_queue.empty(),
+                    _last_seq, trigger);
                   return _requests_queue.empty()
                          || _requests_queue.begin()->first
                               > (_last_seq + sequence_t(1));
@@ -291,7 +305,7 @@ void transport::dispatch_send() {
               // `_requests_queue.erase` the conditional for executing the
               // lambda could succeed for two different messages concurrently
               // resulting in incorrect ordering of the sent messages.
-              [this] {
+              [this, trigger] {
                   auto it = _requests_queue.begin();
                   _last_seq = it->first;
                   auto v = std::move(*it->second->scattered_message);
@@ -314,6 +328,8 @@ void transport::dispatch_send() {
                   // of holding on to the units up until this point.
                   auto units = std::move(resp_entry->resource_units);
                   auto msg_size = v.size();
+
+                  vlog(rpclog.info, "Dispatching seq: {} via trigger: {}", _last_seq, trigger);
 
                   auto f = _out.write(std::move(v));
                   resp_entry->timing.dispatched_at = clock_type::now();
