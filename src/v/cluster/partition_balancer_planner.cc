@@ -60,6 +60,8 @@ distinct_from(const absl::flat_hash_set<model::node_id>& nodes) {
 
 } // namespace
 
+class partition_balancer_tick_aborted_exception final : std::exception {};
+
 partition_balancer_planner::partition_balancer_planner(
   planner_config config,
   partition_balancer_state& state,
@@ -107,13 +109,17 @@ public:
         }
     }
 
-    ss::future<> maybe_yield() { co_await ss::coroutine::maybe_yield(); }
+    ss::future<> maybe_yield() {
+        co_await ss::coroutine::maybe_yield();
+        _as.check();
+    }
 
 private:
     friend class partition_balancer_planner;
 
-    request_context(partition_balancer_planner& parent)
-      : _parent(parent) {}
+    request_context(partition_balancer_planner& parent, ss::abort_source& as)
+      : _parent(parent)
+      , _as(as) {}
 
     bool all_reports_received() const;
 
@@ -128,7 +134,6 @@ private:
     // returns true if the failure can be logged
     bool increment_failure_count();
 
-private:
     partition_balancer_planner& _parent;
     absl::node_hash_map<model::ntp, size_t> _ntp2size;
     absl::node_hash_map<model::ntp, absl::flat_hash_map<model::node_id, size_t>>
@@ -137,6 +142,7 @@ private:
     uint64_t _planned_moves_size_bytes = 0;
     size_t _failed_actions_count = 0;
     absl::node_hash_set<model::ntp> _cancellations;
+    ss::abort_source& _as;
 };
 
 ss::future<> partition_balancer_planner::init_per_node_state(
@@ -1189,8 +1195,8 @@ void partition_balancer_planner::request_context::collect_actions(
 
 ss::future<partition_balancer_planner::plan_data>
 partition_balancer_planner::plan_actions(
-  const cluster_health_report& health_report) {
-    request_context ctx(*this);
+  const cluster_health_report& health_report, ss::abort_source& as) {
+    request_context ctx(*this, as);
     plan_data result;
 
     co_await init_per_node_state(health_report, ctx, result);
