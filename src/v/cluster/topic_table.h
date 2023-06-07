@@ -75,7 +75,7 @@ namespace cluster {
  *                                        force_cancel
  */
 
-class topic_table {
+class topic_table : public ss::enable_lw_shared_from_this<topic_table> {
 public:
     enum class topic_state { exists, not_exists, indeterminate };
 
@@ -461,6 +461,10 @@ public:
 
     model::revision_id last_applied_revision() const {
         return _last_applied_revision_id;
+    }
+
+    model::revision_id topics_map_revision() const {
+        return _topics_map_revision;
     }
 
     // does not include non-replicable partitions

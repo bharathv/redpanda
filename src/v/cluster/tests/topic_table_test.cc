@@ -8,6 +8,7 @@
 // by the Apache License, Version 2.0
 
 #include "cluster/tests/topic_table_fixture.h"
+#include "cluster/topic_table_stable_iterator.h"
 #include "model/fundamental.h"
 #include "model/metadata.h"
 #include "raft/types.h"
@@ -473,4 +474,34 @@ FIXTURE_TEST(test_tracking_broker_and_command_revisions, topic_table_fixture) {
       model::revision_id{16},
       model::revision_id{17},
       model::revision_id{19});
+}
+
+FIXTURE_TEST(test_topic_table_iterator_basic, topic_table_fixture) {
+    create_topics();
+
+    const auto& topics = table.local();
+
+    auto find_tp_ns = [&](const model::topic_namespace& tp_ns) {
+        return std::find_if(
+          topics_begin(topics), topics_end(topics), [&](const auto& it) {
+              return it.first == tp_ns;
+          });
+    };
+
+    BOOST_REQUIRE(find_tp_ns(make_tp_ns("test_tp_1")) != topics_end(topics));
+    BOOST_REQUIRE(find_tp_ns(make_tp_ns("test_tp_2")) != topics_end(topics));
+    BOOST_REQUIRE(find_tp_ns(make_tp_ns("test_tp_3")) != topics_end(topics));
+    BOOST_REQUIRE(find_tp_ns(make_tp_ns("abcdef")) == topics_end(topics));
+}
+
+FIXTURE_TEST(test_topic_table_iterator_invalidation, topic_table_fixture) {
+    create_topics();
+    const auto& topics = table.local();
+
+    auto it = topics_begin(topics);
+    BOOST_REQUIRE(it != topics_end(topics));
+    BOOST_REQUIRE_NO_THROW((void)it->first);
+    add_random_topic(); // invalidates iterator
+    BOOST_REQUIRE_THROW(
+      (void)it->first, cluster::topics_state_changed_exception);
 }
