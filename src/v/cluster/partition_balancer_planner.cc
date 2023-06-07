@@ -17,6 +17,7 @@
 #include "cluster/partition_balancer_types.h"
 #include "cluster/scheduling/constraints.h"
 #include "cluster/scheduling/types.h"
+#include "cluster/topic_table_stable_iterator.h"
 #include "model/namespace.h"
 #include "ssx/sformat.h"
 
@@ -699,9 +700,10 @@ auto partition_balancer_planner::request_context::do_with_partition(
 
 ss::future<> partition_balancer_planner::request_context::for_each_partition(
   ss::noncopyable_function<ss::stop_iteration(partition&)> visitor) {
-    for (const auto& t : _parent._state.topics().topics_map()) {
-        for (const auto& a : t.second.get_assignments()) {
-            auto ntp = model::ntp(t.first.ns, t.first.tp, a.id);
+    const auto& topics = _parent._state.topics();
+    for (auto it = topics_begin(topics); it != topics_end(topics); ++it) {
+        for (const auto& a : it->second.get_assignments()) {
+            auto ntp = model::ntp(it->first.ns, it->first.tp, a.id);
             auto stop = do_with_partition(ntp, a.replicas, visitor);
             if (stop == ss::stop_iteration::yes) {
                 co_return;
