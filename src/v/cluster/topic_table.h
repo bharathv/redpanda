@@ -515,6 +515,10 @@ private:
 
     updates_t _updates_in_progress;
     model::revision_id _last_applied_revision_id;
+    // Monotonic counter that is bumped for every addition/deletion to topics
+    // map. Unlike other revisions this does not correspond to the command
+    // revision that updated the map.
+    model::revision_id _topics_map_revision{0};
 
     fragmented_vector<delta> _pending_deltas;
     std::vector<std::unique_ptr<waiter>> _waiters;

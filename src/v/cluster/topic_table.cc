@@ -96,6 +96,7 @@ topic_table::apply(create_topic_cmd cmd, model::offset offset) {
       cmd.key,
       std::move(md),
     });
+    _topics_map_revision++;
     notify_waiters();
 
     _probe.handle_topic_creation(std::move(cmd.key));
@@ -152,6 +153,7 @@ topic_table::do_local_delete(model::topic_namespace nt, model::offset offset) {
         }
 
         _topics.erase(tp);
+        _topics_map_revision++;
         notify_waiters();
         _probe.handle_topic_deletion(nt);
 
@@ -921,6 +923,7 @@ topic_table::apply(create_non_replicable_topic_cmd cmd, model::offset o) {
        topic_metadata_item{
          .metadata = std::move(md),
        }});
+    _topics_map_revision++;
     notify_waiters();
     co_return make_error_code(errc::success);
 }
@@ -1352,6 +1355,7 @@ ss::future<> topic_table::apply_snapshot(
             co_await applier.delete_topic(ns_tp, md_item, snap_revision);
             auto to_delete = old_it++;
             _topics.erase(to_delete);
+            _topics_map_revision++;
         }
     }
 
@@ -1359,6 +1363,7 @@ ss::future<> topic_table::apply_snapshot(
     for (const auto& [ns_tp, topic] : snap.topics) {
         if (!_topics.contains(ns_tp)) {
             _topics.emplace(ns_tp, co_await applier.create_topic(ns_tp, topic));
+            _topics_map_revision++;
         }
     }
 
