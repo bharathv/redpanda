@@ -102,9 +102,7 @@ public:
     get_oom_diagnostics_callback();
 
 private:
-    /// Starts the background future running the allocation site logging on low
-    /// available memory
-    ss::future<> start_low_available_memory_logging();
+    void maybe_log_memory_samples();
 
     /// Returns the serialized memory_profile for the current shard
     static memory_sampling::serialized_memory_profile
@@ -121,8 +119,9 @@ private:
     // notifies us via below condvar. If we see a new low watermark that's and
     // we are below 20% then we log once and a second time the first time we saw
     // a 10% lower watermark. Values are overridable for tests
-    double _first_log_limit_fraction;
-    double _second_log_limit_fraction;
-    ss::condition_variable _low_watermark_cond;
+    bool _logging_enabled = true;
+    double _first_log_limit;
+    double _second_log_limit;
+    double _next_log_limit;
     ss::gate _low_watermark_gate;
 };

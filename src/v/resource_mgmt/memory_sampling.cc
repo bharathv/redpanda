@@ -21,6 +21,7 @@
 #include <seastar/core/memory.hh>
 #include <seastar/core/smp.hh>
 #include <seastar/core/sstring.hh>
+#include <seastar/util/defer.hh>
 #include <seastar/util/memory_diagnostics.hh>
 
 #include <limits>
@@ -77,50 +78,47 @@ void setup_additional_oom_diagnostics() {
       memory_sampling::get_oom_diagnostics_callback());
 }
 
-void memory_sampling::notify_of_reclaim() { _low_watermark_cond.signal(); }
+void memory_sampling::notify_of_reclaim() {
+    ssx::spawn_with_gate(
+      _low_watermark_gate, [this] { maybe_log_memory_samples(); });
+};
 
-ss::future<> memory_sampling::start_low_available_memory_logging() {
+void memory_sampling::maybe_log_memory_samples() {
     // We want some periodic logging "on the way" to OOM. At the same time we
     // don't want to spam the logs. Hence, we periodically look at the available
     // memory low watermark (this is without the batch cache). If we see that we
     // have crossed the 10% and 20% marks we log the allocation sites. We stop
     // afterwards.
+    if (!_logging_enabled) {
+        return;
+    }
+    // Temporarily disable to avoid recursive calls.
+    _logging_enabled = false;
+    auto unset = ss::defer([&] { _logging_enabled = true; });
 
-    size_t first_log_limit = _first_log_limit_fraction
-                             * seastar::memory::stats().total_memory();
-    size_t second_log_limit = _second_log_limit_fraction
-                              * seastar::memory::stats().total_memory();
-    size_t next_log_limit = first_log_limit;
+    auto current_low_water_mark
+      = resources::available_memory::local().available_low_water_mark();
 
-    while (true) {
-        try {
-            co_await _low_watermark_cond.wait([&next_log_limit]() {
-                auto current_low_water_mark
-                  = resources::available_memory::local()
-                      .available_low_water_mark();
+    if (current_low_water_mark > _next_log_limit) {
+        return;
+    }
 
-                return current_low_water_mark <= next_log_limit;
-            });
-        } catch (const ss::broken_condition_variable&) {
-            co_return;
-        }
+    auto allocation_sites = ss::memory::sampled_memory_profile();
+    const size_t top_n = std::min(size_t(5), allocation_sites.size());
+    top_n_allocation_sites(allocation_sites, top_n);
 
-        auto allocation_sites = ss::memory::sampled_memory_profile();
-        const size_t top_n = std::min(size_t(5), allocation_sites.size());
-        top_n_allocation_sites(allocation_sites, top_n);
+    vlog(
+      _logger.info,
+      "{} {}",
+      diagnostics_header(),
+      fmt::join(
+        allocation_sites.begin(), allocation_sites.begin() + top_n, "|"));
 
-        vlog(
-          _logger.info,
-          "{} {}",
-          diagnostics_header(),
-          fmt::join(
-            allocation_sites.begin(), allocation_sites.begin() + top_n, "|"));
-
-        if (next_log_limit == first_log_limit) {
-            next_log_limit = second_log_limit;
-        } else {
-            co_return;
-        }
+    if (_next_log_limit == _first_log_limit) {
+        _next_log_limit = _second_log_limit;
+    } else {
+        // disable for the lifetime.
+        unset.cancel();
     }
 }
 
@@ -135,8 +133,11 @@ memory_sampling::memory_sampling(
   double second_log_limit_fraction)
   : _logger(logger)
   , _enabled(std::move(enabled))
-  , _first_log_limit_fraction(first_log_limit_fraction)
-  , _second_log_limit_fraction(second_log_limit_fraction) {
+  , _first_log_limit(
+      first_log_limit_fraction * seastar::memory::stats().total_memory())
+  , _second_log_limit(
+      second_log_limit_fraction * seastar::memory::stats().total_memory())
+  , _next_log_limit(_first_log_limit) {
     _enabled.watch([this]() { on_enabled_change(); });
 }
 
@@ -168,17 +169,9 @@ void memory_sampling::start() {
 
     // start now if enabled
     on_enabled_change();
-
-    ssx::spawn_with_gate(_low_watermark_gate, [this]() {
-        return start_low_available_memory_logging();
-    });
 }
 
-ss::future<> memory_sampling::stop() {
-    _low_watermark_cond.broken();
-
-    co_await _low_watermark_gate.close();
-}
+ss::future<> memory_sampling::stop() { co_await _low_watermark_gate.close(); }
 
 memory_sampling::serialized_memory_profile
 memory_sampling::get_sampled_memory_profile() {
