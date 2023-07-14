@@ -163,6 +163,29 @@ private:
     ss::abort_source& _as;
 };
 
+std::pair<uint64_t, uint64_t> partition_balancer_planner::get_node_bytes_info(
+  const node::local_state& node_state) {
+    const auto& state = node_state.log_data_size;
+    if (likely(state)) {
+        // It is okay to account reclaimable space as free space even through
+        // the space is not readily available. During the partition move if the
+        // disk is filled up, trimmer cleans up reclaimable space to make room
+        // for the move.
+        auto actual_free = std::max(
+          state.value().data_target_size - state.value().data_current_size,
+          0UL);
+        auto total_free = actual_free + state.value().data_reclaimable_size;
+        return std::make_pair(state.value().data_target_size, total_free);
+    }
+    // This can happen in the following scenarios
+    // - During an upgrade - not yet upgradaded health report (temporary state).
+    // - No space management configuration in place, fall back to disk usage.
+    // - Configuration in place but local monitor has not yet computed the
+    //   usage information, eg: right after broker bootstrap.
+    return std::make_pair(
+      node_state.data_disk.total, node_state.data_disk.free);
+}
+
 void partition_balancer_planner::init_per_node_state(
   const cluster_health_report& health_report,
   request_context& ctx,
@@ -231,9 +254,9 @@ void partition_balancer_planner::init_per_node_state(
     }
 
     for (const auto& node_report : health_report.node_reports) {
-        const uint64_t total = node_report.local_state.data_disk.total;
-        const uint64_t free = node_report.local_state.data_disk.free;
-
+        const auto usage = get_node_bytes_info(node_report.local_state);
+        const auto total = usage.first;
+        const auto free = usage.second;
         ctx.node_disk_reports.emplace(
           node_report.id, node_disk_space(node_report.id, total, total - free));
     }
