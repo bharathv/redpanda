@@ -41,11 +41,6 @@ static ss::sstring abort_idx_name(model::offset first, model::offset last) {
     return fmt::format("abort.idx.{}.{}", first, last);
 }
 
-static bool is_sequence(int32_t last_seq, int32_t next_seq) {
-    return (last_seq + 1 == next_seq)
-           || (next_seq == 0 && last_seq == std::numeric_limits<int32_t>::max());
-}
-
 model::record_batch make_fence_batch_v0(model::producer_identity pid) {
     iobuf key;
     auto pid_id = pid.id;
@@ -289,22 +284,13 @@ rm_stm::rm_stm(
   raft::consensus* c,
   ss::sharded<cluster::tx_gateway_frontend>& tx_gateway_frontend,
   ss::sharded<features::feature_table>& feature_table,
+  ss::sharded<producer_state_manager>& producer_sm,
   config::binding<uint64_t> max_concurrent_producer_ids)
   : persisted_stm<>(rm_stm_snapshot, logger, c)
   , _tx_locks(
       mt::
         map<absl::flat_hash_map, model::producer_id, ss::lw_shared_ptr<mutex>>(
           _tx_root_tracker.create_child("tx-locks")))
-  , _inflight_requests(mt::map<
-                       absl::flat_hash_map,
-                       model::producer_identity,
-                       ss::lw_shared_ptr<inflight_requests>>(
-      _tx_root_tracker.create_child("in-flight")))
-  , _idempotent_producer_locks(mt::map<
-                               absl::btree_map,
-                               model::producer_identity,
-                               ss::lw_shared_ptr<ss::basic_rwlock<>>>(
-      _tx_root_tracker.create_child("idempotent-producer-locks")))
   , _log_state(_tx_root_tracker)
   , _mem_state(_tx_root_tracker)
   , _oldest_session(model::timestamp::now())
@@ -326,6 +312,7 @@ rm_stm::rm_stm(
   , _log_stats_interval_s(
       config::shard_local_cfg().tx_log_stats_interval_s.bind())
   , _ctx_log(txlog, ssx::sformat("[{}]", c->ntp()))
+  , _psm(producer_sm)
   , _max_concurrent_producer_ids(max_concurrent_producer_ids) {
     setup_metrics();
     if (!_is_tx_enabled) {
@@ -585,11 +572,7 @@ ss::future<checked<model::term_id, tx_errc>> rm_stm::do_begin_tx(
         track_tx(pid, transaction_timeout_ms);
     }
 
-    // a client may start new transaction only when the previous
-    // tx is committed. since a client commits a transacitons
-    // strictly after all records are written it means that it
-    // won't be retrying old writes and we may reset the seq cache
-    _log_state.erase_pid_from_seq_table(pid);
+    // todo: something is broken here, fix
 
     co_return synced_term;
 }
@@ -1186,10 +1169,26 @@ ss::future<result<kafka_result>> rm_stm::do_replicate(
     co_return co_await replicate_msg(std::move(b), opts, enqueued);
 }
 
+void rm_stm::evict_producer(model::producer_identity pid) {
+    ssx::spawn_with_gate(_gate, [this, pid]() mutable {
+        auto it = _p_states.find(pid);
+        if (it == _p_states.end()) {
+            return ss::make_ready_future();
+        }
+        return it->second.shutdown().then([this, it]() {
+            _p_states.erase(it);
+            return ss::make_ready_future();
+        });
+    });
+}
+
 ss::future<> rm_stm::stop() {
     auto_abort_timer.cancel();
     _log_stats_timer.cancel();
-    return raft::state_machine::stop();
+    for (auto& [pid, _] : _p_states) {
+        evict_producer(pid);
+    }
+    co_return co_await raft::state_machine::stop();
 }
 
 ss::future<> rm_stm::start() { return persisted_stm::start(); }
@@ -1221,16 +1220,6 @@ rm_stm::get_expiration_info(model::producer_identity pid) const {
     return it->second;
 }
 
-std::optional<int32_t>
-rm_stm::get_seq_number(model::producer_identity pid) const {
-    auto it = _log_state.seq_table.find(pid);
-    if (it == _log_state.seq_table.end()) {
-        return std::nullopt;
-    }
-
-    return it->second.entry.seq;
-}
-
 ss::future<result<rm_stm::transaction_set>> rm_stm::get_transactions() {
     if (!co_await sync(_sync_timeout)) {
         co_return errc::not_leader;
@@ -1249,7 +1238,8 @@ ss::future<result<rm_stm::transaction_set>> rm_stm::get_transactions() {
         tx_info.lso_bound = offset;
         tx_info.status = rm_stm::transaction_info::status_t::initiating;
         tx_info.info = get_expiration_info(id);
-        tx_info.seq = get_seq_number(id);
+        // TODO: fix
+        tx_info.seq = 1;
         ans.emplace(id, tx_info);
     }
 
@@ -1259,7 +1249,8 @@ ss::future<result<rm_stm::transaction_set>> rm_stm::get_transactions() {
             tx_info.lso_bound = offset;
             tx_info.status = get_tx_status(id);
             tx_info.info = get_expiration_info(id);
-            tx_info.seq = get_seq_number(id);
+            // todo: fix me
+            tx_info.seq = 0;
             ans.emplace(id, tx_info);
         }
     }
@@ -1269,7 +1260,8 @@ ss::future<result<rm_stm::transaction_set>> rm_stm::get_transactions() {
         tx_info.lso_bound = offset.first;
         tx_info.status = get_tx_status(id);
         tx_info.info = get_expiration_info(id);
-        tx_info.seq = get_seq_number(id);
+        // todo: fix me
+        tx_info.seq = 0;
         ans.emplace(id, tx_info);
     }
 
@@ -1298,78 +1290,6 @@ rm_stm::do_mark_expired(model::producer_identity pid) {
     // try_abort_old_tx it checks is tx expired or not.
     _log_state.expiration.erase(pid);
     co_return std::error_code(co_await do_try_abort_old_tx(pid));
-}
-
-bool rm_stm::check_seq(model::batch_identity bid, model::term_id term) {
-    auto& seq_it = _log_state.seq_table[bid.pid];
-    auto last_write_timestamp = model::timestamp::now().value();
-
-    if (!is_sequence(seq_it.entry.seq, bid.first_seq)) {
-        vlog(
-          _ctx_log.warn,
-          "provided seq:{} for pid:{} isn't a continuation of the last known "
-          "seq:{}",
-          bid.first_seq,
-          bid.pid,
-          seq_it.entry.seq);
-        return false;
-    }
-
-    seq_it.entry.update(bid.last_seq, kafka::offset{-1});
-
-    seq_it.entry.pid = bid.pid;
-    seq_it.entry.last_write_timestamp = last_write_timestamp;
-    seq_it.term = term;
-    _oldest_session = std::min(
-      _oldest_session, model::timestamp(seq_it.entry.last_write_timestamp));
-
-    return true;
-}
-
-std::optional<kafka::offset>
-rm_stm::known_seq(model::batch_identity bid) const {
-    auto pid_seq = _log_state.seq_table.find(bid.pid);
-    if (pid_seq == _log_state.seq_table.end()) {
-        return std::nullopt;
-    }
-    if (pid_seq->second.entry.seq == bid.last_seq) {
-        return pid_seq->second.entry.last_offset;
-    }
-    for (auto& entry : pid_seq->second.entry.seq_cache) {
-        if (entry.seq == bid.last_seq) {
-            return entry.offset;
-        }
-    }
-    return std::nullopt;
-}
-
-std::optional<int32_t> rm_stm::tail_seq(model::producer_identity pid) const {
-    auto pid_seq = _log_state.seq_table.find(pid);
-    if (pid_seq == _log_state.seq_table.end()) {
-        return std::nullopt;
-    }
-    return pid_seq->second.entry.seq;
-}
-
-void rm_stm::set_seq(model::batch_identity bid, kafka::offset last_offset) {
-    auto pid_seq = _log_state.seq_table.find(bid.pid);
-    if (pid_seq != _log_state.seq_table.end()) {
-        if (pid_seq->second.entry.seq == bid.last_seq) {
-            pid_seq->second.entry.last_offset = last_offset;
-        }
-    }
-}
-
-void rm_stm::reset_seq(model::batch_identity bid, model::term_id term) {
-    _log_state.erase_pid_from_seq_table(bid.pid);
-    auto& seq_it = _log_state.seq_table[bid.pid];
-    seq_it.term = term;
-    seq_it.entry.seq = bid.last_seq;
-    seq_it.entry.last_offset = kafka::offset{-1};
-    seq_it.entry.pid = bid.pid;
-    seq_it.entry.last_write_timestamp = model::timestamp::now().value();
-    _oldest_session = std::min(
-      _oldest_session, model::timestamp(seq_it.entry.last_write_timestamp));
 }
 
 ss::future<result<kafka_result>>
@@ -1445,129 +1365,117 @@ rm_stm::replicate_tx(model::batch_identity bid, model::record_batch_reader br) {
         co_return errc::generic_tx_error;
     }
 
-    if (_log_state.ongoing_map.contains(bid.pid)) {
-        // this isn't the first attempt in the tx we should try dedupe
-        auto pid_seq = _log_state.seq_table.find(bid.pid);
-        if (pid_seq == _log_state.seq_table.end()) {
-            if (!check_seq(bid, synced_term)) {
-                co_return errc::sequence_out_of_order;
-            }
-        } else if (pid_seq->second.entry.seq == bid.last_seq) {
-            if (pid_seq->second.entry.last_offset() == -1) {
-                if (pid_seq->second.term == synced_term) {
-                    vlog(
-                      _ctx_log.debug,
-                      "Status of the original attempt pid:{} seq:{} is "
-                      "unknown. Returning not_leader_for_partition to trigger "
-                      "retry.",
-                      bid.pid,
-                      bid.last_seq);
-                    co_return errc::not_leader;
-                } else {
-                    // when the term a tx originated on doesn't match the
-                    // current term it means that the re-election happens; upon
-                    // re-election we sync and it catches up with all records
-                    // replicated in previous term. since the cached offset for
-                    // a given seq is still -1 it means that the replication
-                    // hasn't passed so we updating the term to pretent that the
-                    // retry (seqs match) put it there
-                    pid_seq->second.term = synced_term;
-                }
-            } else {
-                vlog(
-                  _ctx_log.trace,
-                  "cache hit for pid:{} seq:{}",
-                  bid.pid,
-                  bid.last_seq);
-                co_return kafka_result{
-                  .last_offset = pid_seq->second.entry.last_offset};
-            }
-        } else {
-            for (auto& entry : pid_seq->second.entry.seq_cache) {
-                if (entry.seq == bid.last_seq) {
-                    if (entry.offset() == -1) {
-                        vlog(
-                          _ctx_log.error,
-                          "cache hit for pid:{} seq:{} resolves to -1 offset",
-                          bid.pid,
-                          entry.seq);
+    auto state = _p_states.lazy_emplace(bid.pid, [&](const auto& ctor) {
+        ctor(
+          bid.pid,
+          producer_state{
+            _psm.local(),
+            bid.pid,
+            _c->group(),
+            synced_term,
+            [this, pid = bid.pid] { evict_producer(pid); }});
+    });
+
+    auto& p_state = state->second;
+    using cached_result_t = ss::future<result<kafka_result>>;
+    using ret_t = result<kafka_result>;
+
+    auto replicate = co_await p_state.run_func(
+      [&](auto units) -> ss::future<ret_t> {
+          // TODO: check for leader under lock.
+          auto res = p_state.enqueue_request(bid, synced_term);
+          if (std::holds_alternative<errc>(res)) {
+              // error, propagate
+              return ss::make_exception_future<ret_t>(std::get<errc>(res));
+          } else if (std::holds_alternative<cached_result_t>(res)) {
+              // Cached in_progress/finished result
+              return std::move(std::get<cached_result_t>(res));
+          }
+          _mem_state.estimated[bid.pid] = _insync_offset;
+          auto expiration_it = _log_state.expiration.find(bid.pid);
+          if (expiration_it == _log_state.expiration.end()) {
+              vlog(
+                _ctx_log.warn,
+                "Can not find expiration info for pid:{}",
+                bid.pid);
+              return ss::make_exception_future<ret_t>(errc::generic_tx_error);
+          }
+          expiration_it->second.last_update = clock_type::now();
+          expiration_it->second.is_expiration_requested = false;
+
+          // request enqueued. replicate and wait for it to be
+          // enqueued at the raft layer.
+          auto req = std::get<producer_state::request_ptr>(res);
+
+          auto replicate_fut = _c->replicate(
+            synced_term,
+            std::move(br),
+            raft::replicate_options(raft::consistency_level::quorum_ack));
+
+          return std::move(replicate_fut)
+            .then_wrapped([&, units = std::move(units), req](auto fut) mutable {
+                auto cleanup = [&]() {
+                    if (_mem_state.estimated.contains(bid.pid)) {
+                        // an error during replication, preventin tx from
+                        // progress
+                        _mem_state.expected.erase(bid.pid);
                     }
+                };
+
+                if (fut.failed()) {
                     vlog(
-                      _ctx_log.trace,
-                      "cache hit for pid:{} seq:{}",
-                      bid.pid,
-                      entry.seq);
-                    co_return kafka_result{.last_offset = entry.offset};
+                      clusterlog.warn,
+                      "future failed: {}",
+                      fut.get_exception());
+                    cleanup();
+                    return ss::make_exception_future<ret_t>(
+                      errc::replication_error);
                 }
+                auto result = fut.get0();
+                if (result.has_error()) {
+                    cleanup();
+                    return ss::make_exception_future<ret_t>(result.error());
+                }
+                units.return_all();
+                auto offset = model::offset(result.value().last_offset);
+                auto wait_until = model::timeout_clock::now() + _sync_timeout;
+                return wait_no_throw(offset, wait_until)
+                  .then([&, this, req, offset](auto success) mutable {
+                      if (!success) {
+                          return ss::make_exception_future<ret_t>(
+                            errc::timeout);
+                      }
+                      // successful
+                      req->result.set_value<kafka_result>(
+                        {.last_offset = from_log_offset(offset)});
+                      _mem_state.estimated.erase(bid.pid);
+                      _mem_state.estimated.erase(bid.pid);
+
+                      if (!is_txn_ga) {
+                          if (!_mem_state.tx_start.contains(bid.pid)) {
+                              auto base_offset = model::offset(
+                                offset() - (bid.record_count - 1));
+                              _mem_state.tx_start.emplace(bid.pid, base_offset);
+                              _mem_state.tx_starts.insert(base_offset);
+                          }
+                      }
+                      return req->result.get_shared_future();
+                  });
+            });
+      });
+
+    if (!replicate) {
+        if (
+          replicate.error() == errc::replication_error
+          || replicate.error() == errc::timeout) {
+            if (_c->is_leader() && _c->term() == synced_term) {
+                co_await _c->step_down(
+                  "replicate_seq replication finished error");
             }
-            if (!check_seq(bid, synced_term)) {
-                co_return errc::sequence_out_of_order;
-            }
         }
-    } else {
-        // this is the first attempt in the tx, reset dedupe cache
-        reset_seq(bid, synced_term);
-
-        _mem_state.estimated[bid.pid] = _insync_offset;
+        co_return replicate.error();
     }
-
-    auto expiration_it = _log_state.expiration.find(bid.pid);
-    if (expiration_it == _log_state.expiration.end()) {
-        vlog(_ctx_log.warn, "Can not find expiration info for pid:{}", bid.pid);
-        co_return errc::generic_tx_error;
-    }
-    expiration_it->second.last_update = clock_type::now();
-    expiration_it->second.is_expiration_requested = false;
-
-    auto r = co_await _c->replicate(
-      synced_term,
-      std::move(br),
-      raft::replicate_options(raft::consistency_level::quorum_ack));
-    if (!r) {
-        vlog(
-          _ctx_log.info,
-          "got {} on replicating tx data batch for pid:{}",
-          r.error(),
-          bid.pid);
-        if (_mem_state.estimated.contains(bid.pid)) {
-            // an error during replication, preventin tx from progress
-            _mem_state.expected.erase(bid.pid);
-        }
-        if (_c->is_leader() && _c->term() == synced_term) {
-            co_await _c->step_down("replicate_tx replication error");
-        }
-        co_return r.error();
-    }
-    if (!co_await wait_no_throw(
-          model::offset(r.value().last_offset()),
-          model::timeout_clock::now() + _sync_timeout)) {
-        vlog(
-          _ctx_log.warn,
-          "application of the replicated tx batch has timed out pid:{}",
-          bid.pid);
-        if (_c->is_leader() && _c->term() == synced_term) {
-            co_await _c->step_down("replicate_tx wait error");
-        }
-        co_return tx_errc::timeout;
-    }
-
-    auto old_offset = r.value().last_offset;
-    auto new_offset = from_log_offset(old_offset);
-
-    set_seq(bid, new_offset);
-
-    _mem_state.estimated.erase(bid.pid);
-
-    if (!is_txn_ga) {
-        if (!_mem_state.tx_start.contains(bid.pid)) {
-            auto base_offset = model::offset(
-              old_offset() - (bid.record_count - 1));
-            _mem_state.tx_start.emplace(bid.pid, base_offset);
-            _mem_state.tx_starts.insert(base_offset);
-        }
-    }
-
-    co_return kafka_result{.last_offset = new_offset};
+    co_return kafka_result{.last_offset = replicate.value().last_offset};
 }
 
 ss::future<result<kafka_result>> rm_stm::replicate_seq(
@@ -1584,16 +1492,6 @@ ss::future<result<kafka_result>> rm_stm::replicate_seq(
     }
     auto synced_term = _insync_term;
 
-    if (bid.first_seq > bid.last_seq) {
-        vlog(
-          _ctx_log.warn,
-          "[pid: {}] first_seq: {} of the batch should be less or equal to "
-          "last_seq: {}",
-          bid.pid,
-          bid.first_seq,
-          bid.last_seq);
-        co_return errc::invalid_request;
-    }
     vlog(
       _ctx_log.trace,
       "[pid: {}] processing idempotent request [first_seq: {}, last_seq: {}, "
@@ -1603,285 +1501,81 @@ ss::future<result<kafka_result>> rm_stm::replicate_seq(
       bid.last_seq,
       bid.record_count);
 
-    auto idempotent_lock = get_idempotent_producer_lock(bid.pid);
-    auto units = co_await idempotent_lock->hold_read_lock();
-
-    // Double check that after hold read lock rw_lock still exists in rw map.
-    // Becasue we can not continue replicate_seq if pid was deleted from state
-    // after we lock mutex
-    if (!_idempotent_producer_locks.contains(bid.pid)) {
-        vlog(
-          _ctx_log.error,
-          "[pid: {}] Lock for pid was deleted from map after we hold it. "
-          "Cleaning process was during replicate_seq",
-          bid.pid);
-        co_return errc::invalid_request;
-    }
-
-    // getting session by client's pid
-    auto session = _inflight_requests
-                     .lazy_emplace(
-                       bid.pid,
-                       [&](const auto& ctor) {
-                           ctor(
-                             bid.pid, ss::make_lw_shared<inflight_requests>());
-                       })
-                     ->second;
-
-    // critical section, rm_stm evaluates the request its order and
-    // whether or not it's duplicated
-    // ASSUMING THAT ALL INFLIGHT REPLICATION REQUESTS WILL SUCCEED
-    // if any of the request fail we expect that the leader step down
-    auto u = co_await session->lock.get_units();
-
-    if (!_c->is_leader() || _c->term() != synced_term) {
-        vlog(
-          _ctx_log.debug,
-          "[pid: {}] resource manager sync failed, not leader",
-          bid.pid);
-        co_return errc::not_leader;
-    }
-
-    if (session->term < synced_term) {
-        // we don't care about old inflight requests because the sync
-        // guarantee (all replicated records of the last term are
-        // applied) makes sure that the passed inflight records got
-        // into _log_state->seq_table
-        session->forget();
-        session->term = synced_term;
-    }
-
-    if (session->term > synced_term) {
-        vlog(
-          _ctx_log.debug,
-          "[pid: {}] session term {} is greater than synced term {}",
+    auto state = _p_states.lazy_emplace(bid.pid, [&](const auto& ctor) {
+        ctor(
           bid.pid,
-          session->term,
-          synced_term);
-        co_return errc::not_leader;
-    }
+          producer_state{
+            _psm.local(),
+            bid.pid,
+            _c->group(),
+            synced_term,
+            [this, pid = bid.pid] { evict_producer(pid); }});
+    });
 
-    // checking if the request (identified by seq) is already resolved
-    // checking among the pending requests
-    auto cached_r = session->known_seq(bid.last_seq);
-    if (cached_r) {
-        vlog(
-          _ctx_log.trace,
-          "[pid: {}] request with last sequence: {}, already resolved",
-          bid.pid,
-          bid.last_seq);
-        co_return cached_r.value();
-    }
-    // checking among the responded requests
-    auto cached_offset = known_seq(bid);
-    if (cached_offset) {
-        vlog(
-          _ctx_log.trace,
-          "[pid: {}] request with last sequence: {}, already resolved in "
-          "log_state",
-          bid.pid,
-          bid.last_seq);
-        co_return kafka_result{.last_offset = cached_offset.value()};
-    }
+    auto& p_state = state->second;
+    using cached_result_t = ss::future<result<kafka_result>>;
+    auto replicate = co_await p_state.run_func(
+      [&](auto units) -> ss::future<ret_t> {
+          // TODO: check for leader under lock.
+          auto res = p_state.enqueue_request(bid, synced_term);
+          if (std::holds_alternative<errc>(res)) {
+              // error, propagate
+              return ss::make_exception_future<ret_t>(std::get<errc>(res));
+          } else if (std::holds_alternative<cached_result_t>(res)) {
+              // Cached in_progress/finished result
+              return std::move(std::get<cached_result_t>(res));
+          }
+          // request enqueued. replicate and wait for it to be
+          // enqueued at the raft layer.
+          auto req = std::get<producer_state::request_ptr>(res);
+          auto replicate_fut = _c->replicate_in_stages(
+            synced_term, std::move(br), opts);
+          return replicate_fut.request_enqueued.then_wrapped(
+            [&,
+             rep = std::move(replicate_fut.replicate_finished),
+             units = std::move(units),
+             req](auto f) mutable {
+                if (f.failed()) {
+                    vlog(
+                      clusterlog.warn, "future failed: {}", f.get_exception());
+                    req->result.set_value<ret_t>(errc::replication_error);
+                    return ss::make_exception_future<ret_t>(
+                      errc::replication_error);
+                }
+                units.return_all();
+                enqueued->set_value();
+                // producer_state is unlocked from this point on.
+                return rep.then_wrapped([&, req](auto fut) {
+                    if (fut.failed()) {
+                        vlog(
+                          clusterlog.warn,
+                          "future failed: {}",
+                          fut.get_exception());
+                        req->result.set_value<ret_t>(errc::replication_error);
+                        return ss::make_exception_future<ret_t>(
+                          errc::replication_error);
+                    }
+                    auto result = fut.get0();
+                    if (result.has_error()) {
+                        auto err = result.error();
+                        req->result.set_value<ret_t>(err);
+                        return ss::make_exception_future<ret_t>(err);
+                    }
+                    auto kafka_offset = from_log_offset(
+                      result.value().last_offset);
+                    req->result.set_value<kafka_result>(
+                      {.last_offset = kafka_offset});
+                    return req->result.get_shared_future();
+                });
+            });
+      });
 
-    // checking if the request is already being processed
-    for (auto& inflight : session->cache) {
-        if (inflight->last_seq == bid.last_seq && inflight->is_processing) {
-            vlog(
-              _ctx_log.trace,
-              "[pid: {}] request with last sequence: {}, already resolved "
-              "being processed",
-              bid.pid,
-              bid.last_seq);
-            // found an inflight request, parking the current request
-            // until the former is resolved
-            auto promise
-              = ss::make_lw_shared<available_promise<result<kafka_result>>>();
-            inflight->parked.push_back(promise);
-            u.return_all();
-            co_return co_await promise->get_future();
-        }
-    }
-
-    // apparantly we process an unseen request
-    // checking if it isn't out of order with the already procceses
-    // or inflight requests
-    if (session->cache.size() == 0) {
-        // no inflight requests > checking processed
-        auto tail = tail_seq(bid.pid);
-        if (tail) {
-            if (!is_sequence(tail.value(), bid.first_seq)) {
-                // there is a gap between the request'ss seq number
-                // and the seq number of the latest processed request
-                vlog(
-                  _ctx_log.warn,
-                  "[pid: {}] sequence number gap detected. batch first "
-                  "sequence: {}, last stored sequence: {}",
-                  bid.pid,
-                  bid.first_seq,
-                  tail.value());
-                co_return errc::sequence_out_of_order;
-            }
-        } else {
-            if (bid.first_seq != 0) {
-                vlog(
-                  _ctx_log.warn,
-                  "[pid: {}] first sequence number in session must be zero, "
-                  "current seq: {}",
-                  bid.pid,
-                  bid.first_seq);
-                // first request in a session should have seq=0, client is
-                // misbehaving
-                co_return errc::sequence_out_of_order;
-            }
-        }
-    } else {
-        if (!is_sequence(session->tail_seq, bid.first_seq)) {
-            // there is a gap between the request's seq number
-            // and the seq number of the latest inflight request
-            // may happen when:
-            //   - batches were reordered on the wire
-            //   - client is misbehaving
-            vlog(
-              _ctx_log.warn,
-              "[pid: {}] sequence number gap detected. batch first sequence: "
-              "{}, last inflight sequence: {}",
-              bid.pid,
-              bid.first_seq,
-              session->tail_seq);
-            co_return errc::sequence_out_of_order;
-        }
-    }
-
-    // updating last observed seq, since we hold the mutex
-    // it's guranteed to be latest
-    session->tail_seq = bid.last_seq;
-
-    auto request = ss::make_lw_shared<inflight_request>();
-    request->last_seq = bid.last_seq;
-    request->is_processing = true;
-    session->cache.push_back(request);
-
-    // request comes in the right order, it's ok to replicate
-    ss::lw_shared_ptr<raft::replicate_stages> ss;
-    auto has_failed = false;
-    try {
-        ss = _c->replicate_in_stages(synced_term, std::move(br), opts);
-        co_await std::move(ss->request_enqueued);
-    } catch (...) {
-        vlog(
-          _ctx_log.warn,
-          "[pid: {}] replication failed with {}",
-          bid.pid,
-          std::current_exception());
-        has_failed = true;
-    }
-
-    result<raft::replicate_result> r = errc::success;
-
-    if (has_failed) {
-        if (_c->is_leader() && _c->term() == synced_term) {
-            // we may not care about the requests waiting on the lock
-            // as soon as we release the lock the leader or term will
-            // be changed so the pending fibers won't pass the initial
-            // checks and be rejected with not_leader
-            co_await _c->step_down("replicate_seq replication error");
-        }
-        u.return_all();
-        r = errc::replication_error;
-    } else {
-        try {
-            u.return_all();
-            enqueued->set_value();
-            r = co_await std::move(ss->replicate_finished);
-        } catch (...) {
-            vlog(
-              _ctx_log.warn,
-              "[pid: {}] replication failed with {}",
-              bid.pid,
-              std::current_exception());
-            r = errc::replication_error;
-        }
-    }
-
-    // we don't need session->lock because we never interleave
-    // access to is_processing and offset with sync point (await)
-    request->is_processing = false;
-    if (r) {
-        auto old_offset = r.value().last_offset;
-        auto new_offset = from_log_offset(old_offset);
-        request->r = ret_t(kafka_result{new_offset});
-    } else {
-        request->r = ret_t(r.error());
-    }
-    for (auto& pending : request->parked) {
-        pending->set_value(request->r);
-    }
-    request->parked.clear();
-
-    if (!request->r) {
-        vlog(
-          _ctx_log.warn,
-          "[pid: {}] replication of batch with first seq: {} failed at "
-          "consensus level - error: {}",
-          bid.pid,
-          bid.first_seq,
-          request->r.error().message());
-        // if r was failed at the consensus level (not because has_failed)
-        // it should guarantee that all follow up replication requests fail
-        // too but just in case stepping down to minimize the risk
+    if (!replicate && replicate.error() == errc::replication_error) {
         if (_c->is_leader() && _c->term() == synced_term) {
             co_await _c->step_down("replicate_seq replication finished error");
         }
-        co_return request->r;
     }
-
-    // requests get into session->cache in seq order so when we iterate
-    // starting from the beginning and until we meet the first still
-    // in flight request we may be sure that we update seq_table in
-    // order to preserve monotonicity and the lack of gaps
-    while (!session->cache.empty() && !session->cache.front()->is_processing) {
-        auto front = session->cache.front();
-        if (!front->r) {
-            vlog(
-              _ctx_log.debug,
-              "[pid: {}] session cache front failed - error: {}",
-              bid.pid,
-              front->r.error().message());
-            // just encountered a failed request it but when a request
-            // fails it causes a step down so we may not care about
-            // updating seq_table and stop doing it; the next leader's
-            // apply will do it for us
-            break;
-        }
-        auto [seq_it, inserted] = _log_state.seq_table.try_emplace(bid.pid);
-        if (inserted) {
-            seq_it->second.entry.pid = bid.pid;
-            seq_it->second.entry.seq = front->last_seq;
-            seq_it->second.entry.last_offset = front->r.value().last_offset;
-        } else {
-            seq_it->second.entry.update(
-              front->last_seq, front->r.value().last_offset);
-        }
-
-        if (!bid.is_transactional) {
-            _log_state.unlink_lru_pid(seq_it->second);
-            _log_state.lru_idempotent_pids.push_back(seq_it->second);
-        }
-
-        session->cache.pop_front();
-    }
-
-    // We can not do any async work after replication is finished and we marked
-    // request as finished. Becasue it can do reordering for requests. So we
-    // need to spawn background cleaning thread
-    spawn_background_clean_for_pids(rm_stm::clear_type::idempotent_pids);
-
-    if (session->cache.empty() && session->lock.ready()) {
-        _inflight_requests.erase(bid.pid);
-    }
-
-    co_return request->r;
+    co_return replicate;
 }
 
 ss::future<result<kafka_result>> rm_stm::replicate_msg(
@@ -2055,9 +1749,13 @@ bool rm_stm::is_producer_expired(
 }
 
 void rm_stm::compact_snapshot() {
+    return;
+    /*
+    // TODO FIX ME
     if (_log_state.seq_table.empty()) {
         return;
     }
+    */
     const auto now = model::timestamp::now();
     const auto expiration_ms_count = _transactional_id_expiration.count();
     if ((now - _oldest_session).value() < expiration_ms_count) {
@@ -2066,24 +1764,26 @@ void rm_stm::compact_snapshot() {
 
     model::timestamp::type oldest_preserved_session = now.value();
 
-    for (auto it = _log_state.seq_table.cbegin();
-         it != _log_state.seq_table.cend();
-         it++) {
-        if (is_producer_expired(now, it->second.entry)) {
-            vlog(
-              _ctx_log.debug,
-              "Clearing pid: {}, last_write_timestamp: {}, now: {}, reason: "
-              "expired",
-              it->first,
-              it->second.entry.last_write_timestamp,
-              now.value());
-            auto it_copy = it;
-            _log_state.erase_seq(it_copy);
-        } else {
-            oldest_preserved_session = std::min(
-              it->second.entry.last_write_timestamp, oldest_preserved_session);
+    /*
+        for (auto it = _log_state.seq_table.cbegin();
+             it != _log_state.seq_table.cend();
+             it++) {
+            if (is_producer_expired(now, it->second.entry)) {
+                vlog(
+                  _ctx_log.debug,
+                  "Clearing pid: {}, last_write_timestamp: {}, now: {}, reason:
+       " "expired", it->first, it->second.entry.last_write_timestamp,
+                  now.value());
+                auto it_copy = it;
+                _log_state.erase_seq(it_copy);
+            } else {
+                oldest_preserved_session = std::min(
+                  it->second.entry.last_write_timestamp,
+       oldest_preserved_session);
+            }
         }
-    }
+
+    */
     _oldest_session = model::timestamp(oldest_preserved_session);
 }
 
@@ -2504,45 +2204,20 @@ ss::future<> rm_stm::reduce_aborted_list() {
 
 void rm_stm::apply_data(model::batch_identity bid, model::offset last_offset) {
     if (bid.has_idempotent()) {
-        auto [seq_it, inserted] = _log_state.seq_table.try_emplace(bid.pid);
         auto translated = from_log_offset(last_offset);
-
-        if (inserted) {
-            vlog(
-              _ctx_log.trace,
-              "Inserted [pid: {}, fs: {}, ls:{}] offset: {}, with "
-              "kafka_offset: {}",
+        if (unlikely(!_p_states.contains(bid.pid))) {
+            _p_states.emplace(
               bid.pid,
-              bid.first_seq,
-              bid.last_seq,
-              last_offset,
-              translated);
-            seq_it->second.entry.pid = bid.pid;
-            seq_it->second.entry.seq = bid.last_seq;
-            seq_it->second.entry.last_offset = translated;
-        } else {
-            vlog(
-              _ctx_log.trace,
-              "Updated [pid: {}, fs: {}, ls:{}] offset: {}, with kafka_offset: "
-              "{}",
-              bid.pid,
-              bid.first_seq,
-              bid.last_seq,
-              last_offset,
-              translated);
-            seq_it->second.entry.update(bid.last_seq, translated);
+              producer_state(
+                _psm.local(),
+                bid.pid,
+                _c->group(),
+                _c->term(),
+                [this, pid = bid.pid] { evict_producer(pid); }));
         }
-
-        if (!bid.is_transactional) {
-            _log_state.unlink_lru_pid(seq_it->second);
-            _log_state.lru_idempotent_pids.push_back(seq_it->second);
-            spawn_background_clean_for_pids(
-              rm_stm::clear_type::idempotent_pids);
-        }
-
-        auto now = model::timestamp::now();
-        seq_it->second.entry.last_write_timestamp = now.value();
-        _oldest_session = std::min(_oldest_session, now);
+        auto it = _p_states.find(bid.pid);
+        auto& p_state = it->second;
+        p_state.update(bid, translated);
     }
 
     if (bid.is_transactional) {
@@ -2722,6 +2397,8 @@ rm_stm::apply_snapshot(stm_snapshot_header hdr, iobuf&& tx_ss_buf) {
          it++) {
         _log_state.abort_indexes.push_back(*it);
     }
+    /**
+    // TODO: Fix me
     for (auto& entry : data.seqs) {
         const auto pid = entry.pid;
         auto it = _log_state.seq_table.find(pid);
@@ -2733,6 +2410,7 @@ rm_stm::apply_snapshot(stm_snapshot_header hdr, iobuf&& tx_ss_buf) {
             it->second.term = model::term_id(-1);
         }
     }
+    */
 
     abort_index last{.last = model::offset(-1)};
     for (auto& entry : _log_state.abort_indexes) {
@@ -2761,28 +2439,28 @@ rm_stm::apply_snapshot(stm_snapshot_header hdr, iobuf&& tx_ss_buf) {
             .is_expiration_requested = false});
     }
 
-    // We need to fill order for idempotent requests. So pid is from idempotent
-    // request if it is not inside fence_pid_epoch. For order we just need to
-    // check last_write_timestamp. It contains time last apply for log record.
-    fragmented_vector<log_state::seq_map::iterator> sorted_pids;
-    for (auto it = _log_state.seq_table.begin();
-         it != _log_state.seq_table.end();
-         ++it) {
-        if (!_log_state.fence_pid_epoch.contains(
-              it->second.entry.pid.get_id())) {
-            sorted_pids.push_back(it);
+    /**
+        TODO: fix me
+        // We need to fill order for idempotent requests. So pid is from
+       idempotent
+        // request if it is not inside fence_pid_epoch. For order we just need
+       to
+        // check last_write_timestamp. It contains time last apply for log
+       record. fragmented_vector<log_state::seq_map::iterator> sorted_pids; for
+       (auto it = _log_state.seq_table.begin(); it !=
+       _log_state.seq_table.end();
+             ++it) {
+            if (!_log_state.fence_pid_epoch.contains(
+                  it->second.entry.pid.get_id())) {
+                sorted_pids.push_back(it);
+            }
         }
-    }
 
-    std::sort(sorted_pids.begin(), sorted_pids.end(), [](auto& lhs, auto& rhs) {
-        return lhs->second.entry.last_write_timestamp
-               < rhs->second.entry.last_write_timestamp;
-    });
-
-    for (auto it : sorted_pids) {
-        _log_state.lru_idempotent_pids.push_back(it->second);
-    }
-
+        std::sort(sorted_pids.begin(), sorted_pids.end(), [](auto& lhs, auto&
+       rhs) { return lhs->second.entry.last_write_timestamp <
+       rhs->second.entry.last_write_timestamp;
+        });
+    */
     _last_snapshot_offset = data.offset;
     _insync_offset = data.offset;
 }
@@ -2856,6 +2534,8 @@ ss::future<> rm_stm::offload_aborted_txns() {
 // DO NOT coroutinize this method as it may cause issues on ARM:
 // https://github.com/redpanda-data/redpanda/issues/6768
 ss::future<stm_snapshot> rm_stm::take_snapshot() {
+    return ss::make_exception_future<stm_snapshot>(
+      std::runtime_error("snapshots disabled temporarily until fixed."));
     auto start_offset = _raft->start_offset();
     vlog(
       _ctx_log.trace,
@@ -2920,118 +2600,129 @@ ss::future<stm_snapshot> rm_stm::take_snapshot() {
               });
         });
     }
-    kafka::offset start_kafka_offset = from_log_offset(start_offset);
-    return f.then([this, start_kafka_offset]() mutable {
-        return ss::do_with(
-          iobuf{}, [this, start_kafka_offset](iobuf& tx_ss_buf) mutable {
-              auto version = active_snapshot_version();
-              auto fut_serialize = ss::now();
-              if (version == tx_snapshot::version) {
-                  tx_snapshot tx_ss;
-                  fill_snapshot_wo_seqs(tx_ss);
-                  for (const auto& entry : _log_state.seq_table) {
-                      /**
-                       * Only store those producer id sequences which offset is
-                       * greater than log start offset. This way a snapshot will
-                       * not retain producers ids for which all the batches were
-                       * removed with log cleanup policy.
-                       *
-                       * Note that we are not removing producer ids from the in
-                       * memory state but rather relay on the expiration policy
-                       * to do it, however when recovering state from the
-                       * snapshot removed producers will be gone.
-                       */
-                      if (
-                        entry.second.entry.last_offset >= start_kafka_offset) {
-                          tx_ss.seqs.push_back(entry.second.entry.copy());
-                      }
-                  }
-                  tx_ss.offset = _insync_offset;
+    // kafka::offset start_kafka_offset = from_log_offset(start_offset);
+    return f.then([this]() mutable {
+        return ss::do_with(iobuf{}, [this](iobuf& tx_ss_buf) mutable {
+            auto version = active_snapshot_version();
+            auto fut_serialize = ss::now();
+            if (version == tx_snapshot::version) {
+                tx_snapshot tx_ss;
+                fill_snapshot_wo_seqs(tx_ss);
+                /*
+                TODO Fix me
+                for (const auto& entry : _log_state.seq_table) {
+                  */
+                /*
+                 * Only store those producer id sequences which offset is
+                 * greater than log start offset. This way a snapshot will
+                 * not retain producers ids for which all the batches were
+                 * removed with log cleanup policy.
+                 *
+                 * Note that we are not removing producer ids from the in
+                 * memory state but rather relay on the expiration policy
+                 * to do it, however when recovering state from the
+                 * snapshot removed producers will be gone.
+                 */
+                /*
+               if (
+                 entry.second.entry.last_offset >= start_kafka_offset) {
+                   tx_ss.seqs.push_back(entry.second.entry.copy());
+               }
+           }*/
 
-                  for (const auto& entry : _log_state.current_txes) {
-                      tx_ss.tx_data.push_back(tx_snapshot::tx_data_snapshot{
-                        .pid = entry.first,
-                        .tx_seq = entry.second.tx_seq,
-                        .tm = entry.second.tm_partition});
-                  }
+                tx_ss.offset = _insync_offset;
 
-                  for (const auto& entry : _log_state.expiration) {
-                      tx_ss.expiration.push_back(
-                        tx_snapshot::expiration_snapshot{
-                          .pid = entry.first, .timeout = entry.second.timeout});
-                  }
+                for (const auto& entry : _log_state.current_txes) {
+                    tx_ss.tx_data.push_back(tx_snapshot::tx_data_snapshot{
+                      .pid = entry.first,
+                      .tx_seq = entry.second.tx_seq,
+                      .tm = entry.second.tm_partition});
+                }
 
-                  fut_serialize = reflection::async_adl<tx_snapshot>{}.to(
-                    tx_ss_buf, std::move(tx_ss));
-              } else if (version == tx_snapshot_v3::version) {
-                  tx_snapshot_v3 tx_ss;
-                  fill_snapshot_wo_seqs(tx_ss);
-                  for (const auto& entry : _log_state.seq_table) {
-                      tx_ss.seqs.push_back(entry.second.entry.copy());
-                  }
-                  tx_ss.offset = _insync_offset;
+                for (const auto& entry : _log_state.expiration) {
+                    tx_ss.expiration.push_back(tx_snapshot::expiration_snapshot{
+                      .pid = entry.first, .timeout = entry.second.timeout});
+                }
 
-                  for (const auto& entry : _log_state.current_txes) {
-                      tx_ss.tx_seqs.push_back(tx_snapshot_v3::tx_seqs_snapshot{
-                        .pid = entry.first, .tx_seq = entry.second.tx_seq});
-                  }
+                fut_serialize = reflection::async_adl<tx_snapshot>{}.to(
+                  tx_ss_buf, std::move(tx_ss));
+            } else if (version == tx_snapshot_v3::version) {
+                tx_snapshot_v3 tx_ss;
+                fill_snapshot_wo_seqs(tx_ss);
+                /*
+                // TODO FIX ME
+                for (const auto& entry : _log_state.seq_table) {
+                    tx_ss.seqs.push_back(entry.second.entry.copy());
+                }
+                */
+                tx_ss.offset = _insync_offset;
 
-                  for (const auto& entry : _log_state.expiration) {
-                      tx_ss.expiration.push_back(
-                        tx_snapshot::expiration_snapshot{
-                          .pid = entry.first, .timeout = entry.second.timeout});
-                  }
+                for (const auto& entry : _log_state.current_txes) {
+                    tx_ss.tx_seqs.push_back(tx_snapshot_v3::tx_seqs_snapshot{
+                      .pid = entry.first, .tx_seq = entry.second.tx_seq});
+                }
 
-                  fut_serialize = reflection::async_adl<tx_snapshot_v3>{}.to(
-                    tx_ss_buf, std::move(tx_ss));
-              } else if (version == tx_snapshot_v2::version) {
-                  tx_snapshot_v2 tx_ss;
-                  fill_snapshot_wo_seqs(tx_ss);
-                  for (const auto& entry : _log_state.seq_table) {
-                      tx_ss.seqs.push_back(entry.second.entry.copy());
-                  }
-                  tx_ss.offset = _insync_offset;
-                  fut_serialize = reflection::async_adl<tx_snapshot_v2>{}.to(
-                    tx_ss_buf, std::move(tx_ss));
-              } else if (version == tx_snapshot_v1::version) {
-                  tx_snapshot_v1 tx_ss;
-                  fill_snapshot_wo_seqs(tx_ss);
-                  for (const auto& it : _log_state.seq_table) {
-                      auto& entry = it.second.entry;
-                      seq_entry_v1 seqs;
-                      seqs.pid = entry.pid;
-                      seqs.seq = entry.seq;
-                      try {
-                          seqs.last_offset = to_log_offset(entry.last_offset);
-                      } catch (...) {
-                          // ignoring outside the translation range errors
-                          continue;
-                      }
-                      seqs.last_write_timestamp = entry.last_write_timestamp;
-                      seqs.seq_cache.reserve(seqs.seq_cache.size());
-                      for (auto& item : entry.seq_cache) {
-                          try {
-                              seqs.seq_cache.push_back(seq_cache_entry_v1{
-                                .seq = item.seq,
-                                .offset = to_log_offset(item.offset)});
-                          } catch (...) {
-                              // ignoring outside the translation range errors
-                              continue;
-                          }
-                      }
-                      tx_ss.seqs.push_back(std::move(seqs));
-                  }
-                  tx_ss.offset = _insync_offset;
-                  fut_serialize = reflection::async_adl<tx_snapshot_v1>{}.to(
-                    tx_ss_buf, std::move(tx_ss));
-              } else {
-                  vassert(false, "unsupported tx_snapshot version {}", version);
-              }
-              return fut_serialize.then([version, &tx_ss_buf, this]() {
-                  return stm_snapshot::create(
-                    version, _insync_offset, std::move(tx_ss_buf));
-              });
-          });
+                for (const auto& entry : _log_state.expiration) {
+                    tx_ss.expiration.push_back(tx_snapshot::expiration_snapshot{
+                      .pid = entry.first, .timeout = entry.second.timeout});
+                }
+
+                fut_serialize = reflection::async_adl<tx_snapshot_v3>{}.to(
+                  tx_ss_buf, std::move(tx_ss));
+            } else if (version == tx_snapshot_v2::version) {
+                tx_snapshot_v2 tx_ss;
+                fill_snapshot_wo_seqs(tx_ss);
+                /*
+                TODO: fix me
+                for (const auto& entry : _log_state.seq_table) {
+                    tx_ss.seqs.push_back(entry.second.entry.copy());
+                }
+                */
+                tx_ss.offset = _insync_offset;
+                fut_serialize = reflection::async_adl<tx_snapshot_v2>{}.to(
+                  tx_ss_buf, std::move(tx_ss));
+            } else if (version == tx_snapshot_v1::version) {
+                tx_snapshot_v1 tx_ss;
+                fill_snapshot_wo_seqs(tx_ss);
+                /*
+                  TODO fix me
+                for (const auto& it : _log_state.seq_table) {
+                    auto& entry = it.second.entry;
+                    seq_entry_v1 seqs;
+                    seqs.pid = entry.pid;
+                    seqs.seq = entry.seq;
+                    try {
+                        seqs.last_offset = to_log_offset(entry.last_offset);
+                    } catch (...) {
+                        // ignoring outside the translation range errors
+                        continue;
+                    }
+                    seqs.last_write_timestamp = entry.last_write_timestamp;
+                    seqs.seq_cache.reserve(seqs.seq_cache.size());
+                    for (auto& item : entry.seq_cache) {
+                        try {
+                            seqs.seq_cache.push_back(seq_cache_entry_v1{
+                              .seq = item.seq,
+                              .offset = to_log_offset(item.offset)});
+                        } catch (...) {
+                            // ignoring outside the translation range errors
+                            continue;
+                        }
+                    }
+                    tx_ss.seqs.push_back(std::move(seqs));
+                }
+                tx_ss.offset = _insync_offset;
+                fut_serialize = reflection::async_adl<tx_snapshot_v1>{}.to(
+                  tx_ss_buf, std::move(tx_ss));
+                  */
+            } else {
+                vassert(false, "unsupported tx_snapshot version {}", version);
+            }
+            return fut_serialize.then([version, &tx_ss_buf, this]() {
+                return stm_snapshot::create(
+                  version, _insync_offset, std::move(tx_ss_buf));
+            });
+        });
     });
 }
 
@@ -3159,11 +2850,6 @@ void rm_stm::spawn_background_clean_for_pids(rm_stm::clear_type type) {
         break;
     }
     case rm_stm::clear_type::idempotent_pids: {
-        if (
-          _log_state.lru_idempotent_pids.size()
-          <= _max_concurrent_producer_ids()) {
-            return;
-        }
         break;
     }
     }
@@ -3184,7 +2870,7 @@ ss::future<> rm_stm::clear_old_pids(clear_type type) {
         co_return co_await clear_old_tx_pids();
     }
     case rm_stm::clear_type::idempotent_pids: {
-        co_return co_await clear_old_idempotent_pids();
+        co_return;
     }
     }
 }
@@ -3221,51 +2907,6 @@ ss::future<> rm_stm::clear_old_tx_pids() {
       });
 }
 
-ss::future<> rm_stm::clear_old_idempotent_pids() {
-    if (
-      _log_state.lru_idempotent_pids.size() < _max_concurrent_producer_ids()) {
-        co_return;
-    }
-
-    vlog(
-      _ctx_log.debug,
-      "Found {} old idempotent pids for delete",
-      _log_state.lru_idempotent_pids.size() - _max_concurrent_producer_ids());
-
-    while (_log_state.lru_idempotent_pids.size()
-           > _max_concurrent_producer_ids()) {
-        auto pid_for_delete = _log_state.lru_idempotent_pids.front().entry.pid;
-        auto rw_lock = get_idempotent_producer_lock(pid_for_delete);
-        auto lock = rw_lock->try_write_lock();
-        if (lock) {
-            vlog(
-              _ctx_log.trace,
-              "Clearing pid: {}, reason: exceeded max concurrent pids: "
-              "{}",
-              pid_for_delete,
-              _max_concurrent_producer_ids());
-            _log_state.lru_idempotent_pids.pop_front();
-            _log_state.seq_table.erase(pid_for_delete);
-            _inflight_requests.erase(pid_for_delete);
-            _idempotent_producer_locks.erase(pid_for_delete);
-            rw_lock->write_unlock();
-        }
-
-        co_await ss::maybe_yield();
-    }
-}
-
-std::ostream&
-operator<<(std::ostream& o, const rm_stm::inflight_requests& reqs) {
-    fmt::print(
-      o,
-      "{{ tail: {}, term: {}, request cache size: {} }}",
-      reqs.tail_seq,
-      reqs.term,
-      reqs.cache.size());
-    return o;
-}
-
 std::ostream& operator<<(std::ostream& o, const rm_stm::mem_state& state) {
     fmt::print(
       o,
@@ -3283,7 +2924,7 @@ std::ostream& operator<<(std::ostream& o, const rm_stm::log_state& state) {
     fmt::print(
       o,
       "{{ fence_epochs: {}, ongoing_m: {}, ongoing_set: {}, prepared: {}, "
-      "aborted: {}, abort_indexes: {}, seq_table: {}, tx_seqs: {}, expiration: "
+      "aborted: {}, abort_indexes: {}, tx_seqs: {}, expiration: "
       "{}}}",
       state.fence_pid_epoch.size(),
       state.ongoing_map.size(),
@@ -3291,7 +2932,6 @@ std::ostream& operator<<(std::ostream& o, const rm_stm::log_state& state) {
       state.prepared.size(),
       state.aborted.size(),
       state.abort_indexes.size(),
-      state.seq_table.size(),
       state.current_txes.size(),
       state.expiration.size());
     return o;
@@ -3320,20 +2960,6 @@ void rm_stm::setup_metrics() {
       prometheus_sanitize::metrics_name("tx:partition"),
       {
         sm::make_gauge(
-          "idempotency_pid_cache_size",
-          [this] { return _log_state.seq_table.size(); },
-          sm::description(
-            "Number of active producers (known producer_id seq number pairs)."),
-          labels)
-          .aggregate(aggregate_labels),
-        sm::make_gauge(
-          "idempotency_num_pids_inflight",
-          [this] { return _inflight_requests.size(); },
-          sm::description(
-            "Number of pids with in flight idempotent produce requests."),
-          labels)
-          .aggregate(aggregate_labels),
-        sm::make_gauge(
           "tx_num_inflight_requests",
           [this] { return _log_state.ongoing_map.size(); },
           sm::description("Number of ongoing transactional requests."),
@@ -3360,10 +2986,9 @@ ss::future<> rm_stm::maybe_log_tx_stats() {
     auto units = co_await _state_lock.hold_read_lock();
     _ctx_log.debug(
       "tx memory snapshot stats: {{mem_state: {}, log_state: "
-      "{} inflight_requests: {} }}",
+      "{} }}",
       _mem_state,
-      _log_state,
-      _inflight_requests.size());
+      _log_state);
 }
 
 void rm_stm::log_tx_stats() {

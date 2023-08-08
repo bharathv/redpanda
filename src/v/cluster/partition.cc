@@ -50,6 +50,7 @@ partition::partition(
   ss::sharded<features::feature_table>& feature_table,
   ss::sharded<cluster::tm_stm_cache_manager>& tm_stm_cache_manager,
   ss::sharded<archival::upload_housekeeping_service>& upload_hks,
+  ss::sharded<producer_state_manager>& producer_sm,
   storage::kvstore& kvstore,
   config::binding<uint64_t> max_concurrent_producer_ids,
   std::optional<cloud_storage_clients::bucket_name> read_replica_bucket)
@@ -113,6 +114,7 @@ partition::partition(
               _raft.get(),
               _tx_gateway_frontend,
               _feature_table,
+              producer_sm,
               max_concurrent_producer_ids);
             stm_manager->add_stm(_rm_stm);
         }

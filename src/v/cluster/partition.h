@@ -53,6 +53,7 @@ public:
       ss::sharded<features::feature_table>&,
       ss::sharded<cluster::tm_stm_cache_manager>&,
       ss::sharded<archival::upload_housekeeping_service>&,
+      ss::sharded<producer_state_manager>&,
       storage::kvstore&,
       config::binding<uint64_t>,
       std::optional<cloud_storage_clients::bucket_name> read_replica_bucket
