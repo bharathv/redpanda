@@ -75,6 +75,8 @@ std::string_view to_string_view(feature f) {
         return "delete_records";
     case feature::lightweight_heartbeats:
         return "lightweight_heartbeats";
+    case feature::idempotency_v2:
+        return "idempotency_v2";
 
     /*
      * testing features
