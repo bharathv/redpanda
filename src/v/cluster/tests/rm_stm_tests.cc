@@ -756,23 +756,4 @@ SEASTAR_THREAD_TEST_CASE(async_adl_snapshot_validation) {
 
     sync_ser_verify(make_tx_snapshot());
     async_ser_verify(make_tx_snapshot());
-
-    auto make_tx_snapshot_v3 = []() {
-        return reflection::tx_snapshot_v3{
-          .fenced = tests::random_frag_vector(model::random_producer_identity),
-          .ongoing = tests::random_frag_vector(model::random_tx_range),
-          .prepared = tests::random_frag_vector(cluster::random_prepare_marker),
-          .aborted = tests::random_frag_vector(model::random_tx_range),
-          .abort_indexes = tests::random_frag_vector(
-            cluster::random_abort_index),
-          .offset = model::random_offset(),
-          .seqs = tests::random_frag_vector(cluster::random_seq_entry),
-          .tx_seqs = tests::random_frag_vector(
-            cluster::random_tx_seqs_snapshot),
-          .expiration = tests::random_frag_vector(
-            cluster::random_expiration_snapshot)};
-    };
-
-    sync_ser_verify(make_tx_snapshot_v3());
-    async_ser_verify(make_tx_snapshot_v3());
 }
