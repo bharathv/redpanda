@@ -394,6 +394,12 @@ private:
     ss::future<result<kafka_result>> transactional_replicate(
       model::batch_identity, model::record_batch_reader);
 
+    ss::future<result<kafka_result>> do_transactional_replicate(
+      producer_ptr,
+      model::batch_identity,
+      model::record_batch_reader,
+      ssx::semaphore_units);
+
     ss::future<result<kafka_result>> idempotent_replicate(
       model::batch_identity,
       model::record_batch_reader,
