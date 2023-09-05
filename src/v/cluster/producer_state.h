@@ -166,6 +166,8 @@ public:
     enqueue_request(const model::batch_identity&, model::term_id current_term);
     void update(const model::batch_identity&, kafka::offset);
 
+    std::optional<seq_t> last_sequence_number() const;
+
 private:
     // Register/deregister with manager.
     void register_self();
