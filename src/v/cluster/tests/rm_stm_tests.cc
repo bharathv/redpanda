@@ -8,7 +8,6 @@
 // by the Apache License, Version 2.0
 
 #include "cluster/errc.h"
-#include "cluster/rm_stm.h"
 #include "cluster/tests/randoms.h"
 #include "cluster/tests/rm_stm_test_fixture.h"
 #include "cluster/tx_snapshot_utils.h"

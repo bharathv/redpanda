@@ -7,22 +7,62 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0
 
+#pragma once
+
 #include "cluster/rm_stm.h"
 #include "reflection/async_adl.h"
+
+using tx_range = cluster::rm_stm::tx_range;
+using prepare_marker = cluster::rm_stm::prepare_marker;
+using abort_index = cluster::rm_stm::abort_index;
+using seq_entry = cluster::rm_stm::seq_entry;
+using duration_type = cluster::rm_stm::duration_type;
+
+namespace cluster {
+
+// note: support for tx_snapshot::version[0-3] was dropped
+// in v23.3.x
+struct tx_snapshot_v4 {
+    static constexpr uint8_t version = 4;
+
+    fragmented_vector<model::producer_identity> fenced;
+    fragmented_vector<tx_range> ongoing;
+    fragmented_vector<prepare_marker> prepared;
+    fragmented_vector<tx_range> aborted;
+    fragmented_vector<abort_index> abort_indexes;
+    model::offset offset;
+    fragmented_vector<seq_entry> seqs;
+
+    struct tx_data_snapshot {
+        model::producer_identity pid;
+        model::tx_seq tx_seq;
+        model::partition_id tm;
+
+        bool operator==(const tx_data_snapshot&) const = default;
+    };
+
+    struct expiration_snapshot {
+        model::producer_identity pid;
+        duration_type timeout;
+
+        bool operator==(const expiration_snapshot&) const = default;
+    };
+
+    fragmented_vector<tx_data_snapshot> tx_data;
+    fragmented_vector<expiration_snapshot> expiration;
+
+    bool operator==(const tx_snapshot_v4&) const = default;
+};
+
+}; // namespace cluster
 
 namespace reflection {
 
 template<class T>
 using fvec = fragmented_vector<T>;
 
-using tx_snapshot = cluster::rm_stm::tx_snapshot_v4;
 // note: tx_snapshot[v0-v3] cleaned up in 23.3.x
-
-using tx_range = cluster::rm_stm::tx_range;
-using prepare_marker = cluster::rm_stm::prepare_marker;
-using abort_index = cluster::rm_stm::abort_index;
-using seq_entry = cluster::rm_stm::seq_entry;
-
+using tx_snapshot = cluster::tx_snapshot_v4;
 template<>
 struct async_adl<tx_snapshot> {
     ss::future<> to(iobuf& out, tx_snapshot snap) {

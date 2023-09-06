@@ -153,40 +153,6 @@ public:
         }
     };
 
-    // note: support for tx_snapshot::version[0-3] was dropped
-    // in v23.3.x
-    struct tx_snapshot_v4 {
-        static constexpr uint8_t version = 4;
-
-        fragmented_vector<model::producer_identity> fenced;
-        fragmented_vector<tx_range> ongoing;
-        fragmented_vector<prepare_marker> prepared;
-        fragmented_vector<tx_range> aborted;
-        fragmented_vector<abort_index> abort_indexes;
-        model::offset offset;
-        fragmented_vector<seq_entry> seqs;
-
-        struct tx_data_snapshot {
-            model::producer_identity pid;
-            model::tx_seq tx_seq;
-            model::partition_id tm;
-
-            bool operator==(const tx_data_snapshot&) const = default;
-        };
-
-        struct expiration_snapshot {
-            model::producer_identity pid;
-            duration_type timeout;
-
-            bool operator==(const expiration_snapshot&) const = default;
-        };
-
-        fragmented_vector<tx_data_snapshot> tx_data;
-        fragmented_vector<expiration_snapshot> expiration;
-
-        bool operator==(const tx_snapshot_v4&) const = default;
-    };
-
     struct abort_snapshot {
         model::offset first;
         model::offset last;

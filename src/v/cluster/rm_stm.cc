@@ -1874,7 +1874,7 @@ model::offset rm_stm::to_log_offset(kafka::offset k_offset) const {
     return model::offset(k_offset);
 }
 template<class T>
-static void move_snapshot_wo_seqs(rm_stm::tx_snapshot_v4& target, T& source) {
+static void move_snapshot_wo_seqs(tx_snapshot_v4& target, T& source) {
     target.fenced = std::move(source.fenced);
     target.ongoing = std::move(source.ongoing);
     target.prepared = std::move(source.prepared);
