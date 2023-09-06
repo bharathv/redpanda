@@ -31,6 +31,18 @@ struct rm_stm_test_fixture : simple_raft_fixture {
         _started = true;
     }
 
+    const cluster::rm_stm::producers_t& producers() const {
+        return _stm->_producers;
+    }
+
+    auto local_snapshot(uint8_t version) {
+        return _stm->do_take_local_snapshot(version);
+    }
+
+    auto apply_snapshot(cluster::stm_snapshot_header hdr, iobuf buf) {
+        return _stm->apply_local_snapshot(hdr, std::move(buf));
+    }
+
     ss::sharded<cluster::tx_gateway_frontend> tx_gateway_frontend;
     ss::shared_ptr<cluster::rm_stm> _stm;
 };

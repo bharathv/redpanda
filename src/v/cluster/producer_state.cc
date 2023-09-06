@@ -17,6 +17,63 @@
 
 namespace cluster {
 
+bool request::operator==(const request& other) const {
+    bool range_match = _first_sequence == other._first_sequence
+                       && _last_sequence == other._last_sequence;
+    // both are in progress or both finished
+    bool status_match = (in_progress() && other.in_progress())
+                        || (!in_progress() && !other.in_progress());
+    bool compare = range_match && status_match;
+    if (compare && !in_progress()) {
+        // both requests have finished
+        // compare the result from promise;
+        auto res = result.get_shared_future().get0();
+        auto res_other = other.result.get_shared_future().get0();
+        bool error_match = (res.has_error() && res_other.has_error())
+                           || (!res.has_error() && !res_other.has_error());
+        compare = compare && error_match;
+        if (compare) {
+            if (res.has_error()) {
+                // both have errored out, compare errors
+                compare = compare && res.error() == res_other.error();
+            } else {
+                // both finished, compared result offsets.
+                compare = compare
+                          && res.value().last_offset
+                               == res_other.value().last_offset;
+            }
+        }
+    }
+    return compare;
+}
+
+bool requests::operator==(const requests& other) const {
+    // check size match
+    bool result
+      = (_inflight_requests.size() == other._inflight_requests.size())
+        && (_finished_requests.size() == other._finished_requests.size());
+    if (!result) {
+        return false;
+    }
+    // compare _inflight_requests
+    auto it = _inflight_requests.begin(),
+         other_it = other._inflight_requests.begin();
+    for (; it != _inflight_requests.end(); ++it, ++other_it) {
+        if (**it != **other_it) {
+            return false;
+        }
+    }
+    // compare _finished_requests
+    it = _finished_requests.begin();
+    other_it = other._finished_requests.begin();
+    for (; it != _finished_requests.end(); ++it, ++other_it) {
+        if (**it != **other_it) {
+            return false;
+        }
+    }
+    return true;
+}
+
 std::optional<request_ptr> requests::last_request() const {
     if (!_inflight_requests.empty()) {
         return _inflight_requests.back();
@@ -123,6 +180,32 @@ void requests::shutdown() {
     _finished_requests.clear();
 }
 
+producer_state::producer_state(
+  producer_state_manager& mgr,
+  ss::noncopyable_function<void()> hook,
+  producer_state_snapshot snapshot) noexcept
+  : _id(snapshot._id)
+  , _group(snapshot._group)
+  , _parent(std::ref(mgr))
+  , _post_eviction_hook(std::move(hook)) {
+    // Hydrate from snapshot.
+    for (auto& req : snapshot._finished_requests) {
+        result_promise_t ready{};
+        ready.set_value(kafka_result{req._last_offset});
+        _requests._finished_requests.push_back(ss::make_lw_shared<request>(
+          req._first_sequence,
+          req._last_sequence,
+          model::term_id{-1},
+          std::move(ready)));
+    }
+    register_self();
+}
+
+bool producer_state::operator==(const producer_state& other) const {
+    return _id == other._id && _group == other._group
+           && _evicted == other._evicted && _requests == other._requests;
+}
+
 std::ostream& operator<<(std::ostream& o, const requests& requests) {
     fmt::print(
       o,
@@ -221,6 +304,33 @@ std::optional<seq_t> producer_state::last_sequence_number() const {
         return std::nullopt;
     }
     return maybe_ptr.value()->_last_sequence;
+}
+
+producer_state_snapshot
+producer_state::snapshot(kafka::offset log_start_offset) const {
+    producer_state_snapshot snapshot;
+    snapshot._id = _id;
+    snapshot._group = _group;
+    snapshot._ms_since_last_update = ms_since_last_update();
+    for (auto& req : _requests._finished_requests) {
+        vassert(
+          !req->in_progress(),
+          "_finished_requests has unresolved promise: {}, range:[{}, {}]",
+          *this,
+          req->_first_sequence,
+          req->_last_sequence);
+        auto kafka_offset
+          = req->result.get_shared_future().get().value().last_offset;
+        // offsets older than log start are no longer interesting.
+        if (kafka_offset >= log_start_offset) {
+            snapshot._finished_requests.push_back(
+              producer_state_snapshot::finished_request{
+                ._first_sequence = req->_first_sequence,
+                ._last_sequence = req->_last_sequence,
+                ._last_offset = kafka_offset});
+        }
+    }
+    return snapshot;
 }
 
 } // namespace cluster

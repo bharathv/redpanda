@@ -1889,11 +1889,14 @@ rm_stm::apply_local_snapshot(stm_snapshot_header hdr, iobuf&& tx_ss_buf) {
       _ctx_log.trace,
       "applying snapshot with last included offset: {}",
       hdr.offset);
-    tx_snapshot_v4 data;
+    tx_snapshot data;
     iobuf_parser data_parser(std::move(tx_ss_buf));
     if (hdr.version == tx_snapshot_v4::version) {
-        data = co_await reflection::async_adl<tx_snapshot_v4>{}.from(
-          data_parser);
+        tx_snapshot_v4 data_v4
+          = co_await reflection::async_adl<tx_snapshot_v4>{}.from(data_parser);
+        data = tx_snapshot(std::move(data_v4), _raft->group());
+    } else if (hdr.version == tx_snapshot::version) {
+        data = co_await reflection::async_adl<tx_snapshot>{}.from(data_parser);
     } else {
         vassert(
           false, "unsupported tx_snapshot_header version {}", hdr.version);
@@ -1929,16 +1932,22 @@ rm_stm::apply_local_snapshot(stm_snapshot_header hdr, iobuf&& tx_ss_buf) {
          it++) {
         _log_state.abort_indexes.push_back(*it);
     }
-    for (auto& entry : data.seqs) {
-        const auto pid = entry.pid;
-        auto it = _log_state.seq_table.find(pid);
-        if (it == _log_state.seq_table.end()) {
-            _log_state.seq_table.try_emplace(
-              it, pid, seq_entry_wrapper{.entry = std::move(entry)});
-        } else if (it->second.entry.seq < entry.seq) {
-            it->second.entry = std::move(entry);
-            it->second.term = model::term_id(-1);
+    co_await reset_producers();
+    for (auto& entry : data.producers) {
+        if (_log_state.fence_pid_epoch.contains(entry._id.get_id())) {
+            continue;
         }
+        vlog(
+          _ctx_log.info,
+          "attempting to add pid: {}, with cache size: {}",
+          entry._id,
+          entry._finished_requests.size());
+        _producers.emplace(
+          entry._id,
+          ss::make_lw_shared<producer_state>(
+            _producer_state_manager.local(),
+            [this, pid = entry._id] { cleanup_producer_state(pid); },
+            std::move(entry)));
     }
 
     abort_index last{.last = model::offset(-1)};
@@ -1967,27 +1976,14 @@ rm_stm::apply_local_snapshot(stm_snapshot_header hdr, iobuf&& tx_ss_buf) {
             .last_update = clock_type::now(),
             .is_expiration_requested = false});
     }
-
-    // We need to fill order for idempotent requests. So pid is from idempotent
-    // request if it is not inside fence_pid_epoch. For order we just need to
-    // check last_write_timestamp. It contains time last apply for log record.
-    fragmented_vector<log_state::seq_map::iterator> sorted_pids;
-    for (auto it = _log_state.seq_table.begin();
-         it != _log_state.seq_table.end();
-         ++it) {
-        if (!_log_state.fence_pid_epoch.contains(
-              it->second.entry.pid.get_id())) {
-            sorted_pids.push_back(it);
-        }
-    }
-
-    std::sort(sorted_pids.begin(), sorted_pids.end(), [](auto& lhs, auto& rhs) {
-        return lhs->second.entry.last_write_timestamp
-               < rhs->second.entry.last_write_timestamp;
-    });
 }
 
-uint8_t rm_stm::active_snapshot_version() { return tx_snapshot_v4::version; }
+uint8_t rm_stm::active_snapshot_version() {
+    if (_feature_table.local().is_active(features::feature::idempotency_v2)) {
+        return tx_snapshot::version;
+    }
+    return tx_snapshot_v4::version;
+}
 
 template<class T>
 void rm_stm::fill_snapshot_wo_seqs(T& snapshot) {
@@ -2043,9 +2039,13 @@ ss::future<> rm_stm::offload_aborted_txns() {
     _log_state.aborted = std::move(snapshot.aborted);
 }
 
+ss::future<stm_snapshot> rm_stm::take_local_snapshot() {
+    return do_take_local_snapshot(active_snapshot_version());
+}
+
 // DO NOT coroutinize this method as it may cause issues on ARM:
 // https://github.com/redpanda-data/redpanda/issues/6768
-ss::future<stm_snapshot> rm_stm::take_local_snapshot() {
+ss::future<stm_snapshot> rm_stm::do_take_local_snapshot(uint8_t version) {
     auto start_offset = _raft->start_offset();
     vlog(
       _ctx_log.trace,
@@ -2111,15 +2111,15 @@ ss::future<stm_snapshot> rm_stm::take_local_snapshot() {
         });
     }
     kafka::offset start_kafka_offset = from_log_offset(start_offset);
-    return f.then([this, start_kafka_offset]() mutable {
+    return f.then([this, start_kafka_offset, version]() mutable {
         return ss::do_with(
-          iobuf{}, [this, start_kafka_offset](iobuf& tx_ss_buf) mutable {
-              auto version = active_snapshot_version();
+          iobuf{},
+          [this, start_kafka_offset, version](iobuf& tx_ss_buf) mutable {
               auto fut_serialize = ss::now();
               if (version == tx_snapshot_v4::version) {
                   tx_snapshot_v4 tx_ss;
                   fill_snapshot_wo_seqs(tx_ss);
-                  for (const auto& entry : _log_state.seq_table) {
+                  for (const auto& [_, state] : _producers) {
                       /**
                        * Only store those producer id sequences which offset is
                        * greater than log start offset. This way a snapshot will
@@ -2131,28 +2131,54 @@ ss::future<stm_snapshot> rm_stm::take_local_snapshot() {
                        * to do it, however when recovering state from the
                        * snapshot removed producers will be gone.
                        */
-                      if (
-                        entry.second.entry.last_offset >= start_kafka_offset) {
-                          tx_ss.seqs.push_back(entry.second.entry.copy());
+                      auto snapshot = state->snapshot(start_kafka_offset);
+                      auto seq_entry
+                        = deprecated_seq_entry::from_producer_state_snapshot(
+                          snapshot);
+                      if (seq_entry.seq != -1) {
+                          tx_ss.seqs.push_back(std::move(seq_entry));
                       }
                   }
                   tx_ss.offset = last_applied_offset();
 
                   for (const auto& entry : _log_state.current_txes) {
-                      tx_ss.tx_data.push_back(tx_snapshot_v4::tx_data_snapshot{
+                      tx_ss.tx_data.push_back(tx_data_snapshot{
                         .pid = entry.first,
                         .tx_seq = entry.second.tx_seq,
                         .tm = entry.second.tm_partition});
                   }
 
                   for (const auto& entry : _log_state.expiration) {
-                      tx_ss.expiration.push_back(
-                        tx_snapshot_v4::expiration_snapshot{
-                          .pid = entry.first, .timeout = entry.second.timeout});
+                      tx_ss.expiration.push_back(expiration_snapshot{
+                        .pid = entry.first, .timeout = entry.second.timeout});
                   }
 
                   fut_serialize = reflection::async_adl<tx_snapshot_v4>{}.to(
                     tx_ss_buf, std::move(tx_ss));
+              } else if (version == tx_snapshot::version) {
+                  tx_snapshot tx_ss;
+                  fill_snapshot_wo_seqs(tx_ss);
+                  for (const auto& [_, state] : _producers) {
+                      tx_ss.producers.push_back(
+                        state->snapshot(start_kafka_offset));
+                  }
+                  tx_ss.offset = last_applied_offset();
+
+                  for (const auto& entry : _log_state.current_txes) {
+                      tx_ss.tx_data.push_back(tx_data_snapshot{
+                        .pid = entry.first,
+                        .tx_seq = entry.second.tx_seq,
+                        .tm = entry.second.tm_partition});
+                  }
+
+                  for (const auto& entry : _log_state.expiration) {
+                      tx_ss.expiration.push_back(expiration_snapshot{
+                        .pid = entry.first, .timeout = entry.second.timeout});
+                  }
+
+                  fut_serialize = reflection::async_adl<tx_snapshot>{}.to(
+                    tx_ss_buf, std::move(tx_ss));
+
               } else {
                   vassert(false, "unsupported tx_snapshot version {}", version);
               }
