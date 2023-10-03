@@ -27,6 +27,7 @@
 #include "transform/rpc/logger.h"
 #include "transform/rpc/rpc_service.h"
 #include "transform/rpc/serde.h"
+#include "utils/retry.h"
 
 #include <seastar/core/abort_source.hh>
 #include <seastar/core/chunked_fifo.hh>
@@ -56,6 +57,13 @@ namespace transform::rpc {
 
 namespace {
 constexpr auto timeout = std::chrono::seconds(1);
+constexpr int max_client_retries = 5;
+static constexpr auto coordinator_partition = model::partition_id{0};
+
+model::ntp offsets_ntp(model::partition_id id) {
+    return {
+      model::kafka_internal_namespace, model::transform_offsets_topic, id};
+}
 
 cluster::errc map_errc(std::error_code ec) {
     if (ec.category() == cluster::error_category()) {
@@ -330,4 +338,189 @@ client::compute_wasm_binary_ntp_leader() {
     }
     co_return leader;
 }
+
+ss::future<result<model::partition_id>>
+client::find_coordinator(model::transform_offsets_key key) {
+    // todo: lookup in a local cache first.
+    return retry_with_backoff(
+      max_client_retries, [&, this] { return find_coordinator_once(key); });
+}
+
+ss::future<result<model::partition_id>>
+client::find_coordinator_once(model::transform_offsets_key key) {
+    auto ntp = offsets_ntp(coordinator_partition);
+    auto leader = _leaders->get_leader_node(ntp);
+    if (!leader) {
+        co_return cluster::errc::not_leader;
+    }
+    find_coordinator_request request;
+    request.add(key);
+    auto f = *leader == _self
+               ? do_local_find_coordinator(std::move(request))
+               : do_remote_find_coordinator(*leader, std::move(request));
+    auto response = co_await std::move(f);
+    if (response.ec == cluster::errc::success) {
+        co_return response.coordinators.at(key);
+    }
+    co_return response.ec;
+}
+
+ss::future<find_coordinator_response>
+client::do_local_find_coordinator(find_coordinator_request request) {
+    vlog(log.trace, "local find coordinator: {}", request);
+    return _local_service->local().find_coordinator(std::move(request));
+}
+
+ss::future<find_coordinator_response> client::do_remote_find_coordinator(
+  model::node_id node, find_coordinator_request request) {
+    vlog(
+      log.trace,
+      "remote find coordinator, node: {}, self: {}, request: {}",
+      node,
+      _self,
+      request);
+    auto response = co_await _connections->local()
+                      .with_node_client<impl::transform_rpc_client_protocol>(
+                        _self,
+                        ss::this_shard_id(),
+                        node,
+                        timeout,
+                        [req = std::move(request)](
+                          impl::transform_rpc_client_protocol proto) mutable {
+                            return proto.find_coordinator(
+                              std::move(req),
+                              ::rpc::client_opts(
+                                model::timeout_clock::now() + timeout));
+                        })
+                      .then(&::rpc::get_ctx_data<find_coordinator_response>);
+    if (!response) {
+        find_coordinator_response find_response;
+        find_response.ec = map_errc(response.error());
+        co_return find_response;
+    }
+    co_return response.value();
+}
+
+ss::future<cluster::errc> client::offset_commit(
+  model::transform_offsets_key key, model::transform_offsets_value value) {
+    return retry_with_backoff(
+      max_client_retries, [&, this] { return offset_commit_once(key, value); });
+}
+
+ss::future<cluster::errc> client::offset_commit_once(
+  model::transform_offsets_key key, model::transform_offsets_value value) {
+    auto coordinator = co_await find_coordinator(key);
+    if (!coordinator) {
+        co_return map_errc(coordinator.error());
+    }
+
+    auto ntp = offsets_ntp(coordinator.value());
+    auto leader = _leaders->get_leader_node(ntp);
+    if (!leader) {
+        co_return cluster::errc::not_leader;
+    }
+
+    offset_commit_request request{coordinator.value()};
+    request.add(key, value);
+
+    auto f = *leader == _self
+               ? do_local_offset_commit(std::move(request))
+               : do_remote_offset_commit(*leader, std::move(request));
+
+    auto response = co_await std::move(f);
+    co_return response.errc;
+}
+
+ss::future<offset_commit_response>
+client::do_local_offset_commit(offset_commit_request request) {
+    vlog(log.trace, "local offset commit: {}", request);
+    return _local_service->local().offset_commit(request);
+}
+
+ss::future<offset_commit_response> client::do_remote_offset_commit(
+  model::node_id node, offset_commit_request request) {
+    vlog(
+      log.trace,
+      "remote offset commit, node: {}, self: {}, request: {}",
+      node,
+      _self,
+      request);
+    auto response
+      = co_await _connections->local()
+          .with_node_client<impl::transform_rpc_client_protocol>(
+            _self,
+            ss::this_shard_id(),
+            node,
+            timeout,
+            [request](impl::transform_rpc_client_protocol proto) mutable {
+                return proto.offset_commit(
+                  std::move(request),
+                  ::rpc::client_opts(model::timeout_clock::now() + timeout));
+            })
+          .then(&::rpc::get_ctx_data<offset_commit_response>);
+    if (!response) {
+        offset_commit_response commit_response{};
+        commit_response.errc = map_errc(response.error());
+        co_return commit_response;
+    }
+    co_return response.value();
+}
+
+ss::future<result<model::transform_offsets_value>>
+client::offset_fetch(model::transform_offsets_key key) {
+    return retry_with_backoff(
+      max_client_retries, [&, this] { return offset_fetch_once(key); });
+}
+
+ss::future<result<model::transform_offsets_value>>
+client::offset_fetch_once(model::transform_offsets_key key) {
+    auto coordinator = co_await find_coordinator(key);
+    if (!coordinator) {
+        co_return coordinator.error();
+    }
+
+    auto ntp = offsets_ntp(coordinator.value());
+    auto leader = _leaders->get_leader_node(ntp);
+    if (!leader) {
+        co_return cluster::errc::not_leader;
+    }
+
+    offset_fetch_request request{key, coordinator.value()};
+    auto f = *leader == _self ? do_local_offset_fetch(request)
+                              : do_remote_offset_fetch(*leader, request);
+    auto response = co_await std::move(f);
+    if (response.errc == cluster::errc::success) {
+        co_return *response.result;
+    }
+    co_return response.errc;
+}
+
+ss::future<offset_fetch_response>
+client::do_local_offset_fetch(offset_fetch_request request) {
+    return _local_service->local().offset_fetch(request);
+}
+
+ss::future<offset_fetch_response> client::do_remote_offset_fetch(
+  model::node_id node, offset_fetch_request request) {
+    auto response
+      = co_await _connections->local()
+          .with_node_client<impl::transform_rpc_client_protocol>(
+            _self,
+            ss::this_shard_id(),
+            node,
+            timeout,
+            [request](impl::transform_rpc_client_protocol proto) mutable {
+                return proto.offset_fetch(
+                  std::move(request),
+                  ::rpc::client_opts(model::timeout_clock::now() + timeout));
+            })
+          .then(&::rpc::get_ctx_data<offset_fetch_response>);
+    if (!response) {
+        offset_fetch_response fetch_response;
+        fetch_response.errc = map_errc(response.error());
+        co_return fetch_response;
+    }
+    co_return response.value();
+}
+
 } // namespace transform::rpc

@@ -250,6 +250,27 @@ public:
         co_return co_await fn(&pp);
     }
 
+    ss::future<find_coordinator_response> invoke_on_shard(
+      ss::shard_id,
+      ss::noncopyable_function<ss::future<find_coordinator_response>(
+        cluster::partition_manager&)>) override final {
+        return ss::make_exception_future<find_coordinator_response>({});
+    }
+
+    ss::future<offset_commit_response> invoke_on_shard(
+      ss::shard_id,
+      ss::noncopyable_function<ss::future<offset_commit_response>(
+        cluster::partition_manager&)>) override final {
+        return ss::make_exception_future<offset_commit_response>({});
+    }
+
+    ss::future<offset_fetch_response> invoke_on_shard(
+      ss::shard_id,
+      ss::noncopyable_function<ss::future<offset_fetch_response>(
+        cluster::partition_manager&)>) override final {
+        return ss::make_exception_future<offset_fetch_response>({});
+    }
+
 private:
     class in_memory_proxy : public kafka::partition_proxy::impl {
     public:
