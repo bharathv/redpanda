@@ -141,6 +141,23 @@ std::error_code members_table::apply(model::offset o, remove_node_cmd cmd) {
 }
 
 std::error_code
+members_table::apply(model::offset version, defunct_nodes_cmd cmd) {
+    _version = model::revision_id(version());
+    for (auto& node : cmd.value.defunct_nodes) {
+        if (auto it = _nodes.find(node); it != _nodes.end()) {
+            auto& [id, metadata] = *it;
+            vlog(
+              clusterlog.info,
+              "changing node {} liveness state to: {}",
+              id,
+              model::liveness_state::defunct);
+            metadata.state.set_liveness_state(model::liveness_state::defunct);
+        }
+    }
+    return errc::success;
+}
+
+std::error_code
 members_table::apply(model::offset version, decommission_node_cmd cmd) {
     _version = model::revision_id(version());
 
@@ -174,6 +191,11 @@ members_table::apply(model::offset version, recommission_node_cmd cmd) {
           != model::membership_state::draining) {
             return errc::invalid_node_operation;
         }
+        if (
+          metadata.state.get_liveness_state()
+          == model::liveness_state::defunct) {
+            return errc::invalid_node_operation;
+        }
         vlog(
           clusterlog.info,
           "changing node {} membership state to: {}",
@@ -195,6 +217,14 @@ members_table::apply(model::offset version, maintenance_mode_cmd cmd) {
         return errc::node_does_not_exists;
     }
     auto& [id, metadata] = *target;
+
+    if (metadata.state.get_liveness_state() == model::liveness_state::defunct) {
+        vlog(
+          clusterlog.debug,
+          "node {} already defunct, cannot be put in maintenance model",
+          id);
+        return errc::invalid_node_operation;
+    }
 
     // no rules to enforce when disabling maintenance mode
     const auto enable = cmd.value;
