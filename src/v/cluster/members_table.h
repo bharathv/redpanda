@@ -48,6 +48,7 @@ public:
 
     bool contains(model::node_id) const;
 
+    std::error_code apply(model::offset, defunct_nodes_cmd);
     std::error_code apply(model::offset, decommission_node_cmd);
     std::error_code apply(model::offset, recommission_node_cmd);
     std::error_code apply(model::offset, maintenance_mode_cmd);
