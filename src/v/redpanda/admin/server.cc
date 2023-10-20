@@ -450,6 +450,18 @@ json::validator make_set_replicas_validator() {
 }
 } // namespace
 
+json::validator make_broker_list_validator() {
+    const std::string schema = R"(
+{
+  "type": "array",
+  "items":{
+      "type": "number"
+  }
+}
+)";
+    return json::validator(schema);
+}
+
 /**
  * A helper around rapidjson's Parse that checks for errors & raises
  * seastar HTTP exception.  Without that check, something as simple
@@ -3469,6 +3481,12 @@ void admin_server::register_partition_routes() {
       [this](std::unique_ptr<ss::http::request> req) {
           return get_reconfigurations_handler(std::move(req));
       });
+
+    register_route<user>(
+      ss::httpd::partition_json::majority_lost,
+      [this](std::unique_ptr<ss::http::request> req) {
+          return get_majority_lost_partitions(std::move(req));
+      });
 }
 namespace {
 ss::httpd::partition_json::partition
@@ -3623,6 +3641,91 @@ admin_server::get_topic_partitions_handler(
       });
 
     co_return ss::json::json_return_type(partitions);
+}
+
+ss::future<ss::json::json_return_type>
+admin_server::get_majority_lost_partitions(
+  std::unique_ptr<ss::http::request> request) {
+    if (need_redirect_to_leader(model::controller_ntp, _metadata_cache)) {
+        throw co_await redirect_to_leader(*request, model::controller_ntp);
+    }
+
+    auto input = request->get_query_param("defunct_nodes");
+    if (input.length() <= 0) {
+        throw ss::httpd::bad_param_exception(
+          "Query parameter defunct_nodes not set, expecting a csv of integers "
+          "(broker_ids)");
+    }
+
+    std::vector<ss::sstring> tokens;
+    boost::split(tokens, input, boost::is_any_of(","));
+
+    std::vector<model::node_id> defunct_nodes;
+    defunct_nodes.reserve(tokens.size());
+    for (auto& token : tokens) {
+        try {
+            defunct_nodes.emplace_back(std::stoi(token));
+        } catch (...) {
+            throw ss::httpd::bad_param_exception(fmt::format(
+              "Token {} doesn't parse to an integer in input: {}, expecting a "
+              "csv of integer broker_ids",
+              token,
+              input));
+        }
+    }
+
+    if (defunct_nodes.size() == 0) {
+        throw ss::httpd::bad_param_exception(fmt::format(
+          "Malformed input query parameter: {}, expecting a csv of "
+          "integers (broker_ids)",
+          input));
+    }
+
+    vlog(
+      adminlog.info,
+      "Request for majority loss partitions from input defunct nodes: {}",
+      defunct_nodes);
+
+    auto result = co_await _controller->get_topics_frontend()
+                    .local()
+                    .partitions_with_lost_majority(std::move(defunct_nodes));
+    if (!result) {
+        if (
+          result.error().category() == cluster::error_category()
+          && result.error() == cluster::errc::concurrent_modification_error) {
+            throw ss::httpd::base_exception(
+              "Concurrent changes to topics while the operation, retry after "
+              "some time, ensure there are no reconfigurations in progress.",
+              ss::http::reply::status_type::service_unavailable);
+        }
+        throw ss::httpd::base_exception(
+          fmt::format(
+            "Internal error while processing request: {}",
+            result.error().message()),
+          ss::http::reply::status_type::internal_server_error);
+    }
+    co_return ss::json::json_return_type(ss::json::stream_range_as_array(
+      lw_shared_container(std::move(result.value())),
+      [](const cluster::ntp_with_majority_loss& ntp) mutable {
+          ss::httpd::partition_json::ntp ntp_json;
+          ntp_json.ns = ntp.ntp.ns();
+          ntp_json.topic = ntp.ntp.tp.topic();
+          ntp_json.partition = ntp.ntp.tp.partition();
+
+          ss::httpd::partition_json::ntp_with_majority_loss result;
+          result.ntp = std::move(ntp_json);
+          result.topic_revision = ntp.topic_revision;
+          for (auto& replica : ntp.assignment) {
+              ss::httpd::partition_json::assignment assignment;
+              assignment.node_id = replica.node_id;
+              assignment.core = replica.shard;
+              result.replicas.push(assignment);
+          }
+          for (auto& node : ntp.defunct_nodes) {
+              result.defunct_nodes.push(node());
+          }
+          return result;
+      }));
 }
 
 ss::future<ss::json::json_return_type>
