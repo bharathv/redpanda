@@ -91,6 +91,10 @@ public:
       model::timeout_clock::time_point,
       std::optional<model::term_id> = std::nullopt);
 
+    std::error_code validate_defunct_nodes(
+      const std::vector<model::node_id>& input,
+      bool ignore_existing_defunct_nodes) const;
+
     /**
      * Given a list of defunct nodes, generates a list of ntps that lost
      * majority due to unavailability of the nodes.

@@ -853,30 +853,66 @@ ss::future<std::error_code> topics_frontend::force_update_partition_replicas(
       _stm, _as, std::move(cmd), tout, term);
 }
 
+std::error_code topics_frontend::validate_defunct_nodes(
+  const std::vector<model::node_id>& input,
+  bool ignore_existing_defunct_nodes) const {
+    if (input.empty()) {
+        return errc::invalid_request;
+    }
+    auto existing_defunct_nodes = _members_table.local().defunct_nodes();
+    // Check if there are any non existent nodes in the input.
+    std::vector<model::node_id> missing_nodes;
+    std::vector<model::node_id> already_defunct_nodes;
+    missing_nodes.reserve(input.size());
+    already_defunct_nodes.reserve(input.size());
+    for (const auto& defunct_node : input) {
+        if (!_members_table.local().contains(defunct_node)) {
+            missing_nodes.push_back(defunct_node);
+        }
+        if (
+          !ignore_existing_defunct_nodes
+          && std::find(
+               existing_defunct_nodes.begin(),
+               existing_defunct_nodes.end(),
+               defunct_node)
+               != existing_defunct_nodes.end()) {
+            already_defunct_nodes.push_back(defunct_node);
+        }
+    }
+    if (!missing_nodes.empty()) {
+        vlog(
+          clusterlog.info,
+          "Invalid request, defunct nodes refer to non existent nodes : {}",
+          missing_nodes);
+        return errc::invalid_request;
+    }
+    if (!already_defunct_nodes.empty()) {
+        vlog(
+          clusterlog.info,
+          "Attempt to mark already defunct nodes: {} as defunct, invalid "
+          "request, existing defunct nodes: {}",
+          already_defunct_nodes,
+          existing_defunct_nodes);
+        return errc::invalid_request;
+    }
+    return errc::success;
+}
+
 ss::future<result<fragmented_vector<ntp_with_majority_loss>>>
 topics_frontend::partitions_with_lost_majority(
   std::vector<model::node_id> defunct_nodes) {
     try {
         fragmented_vector<ntp_with_majority_loss> result;
-        if (defunct_nodes.empty()) {
-            co_return result;
+        auto validation_result = validate_defunct_nodes(defunct_nodes, true);
+        if (validation_result != errc::success) {
+            co_return validation_result;
         }
-        // Check if there are any non existent nodes in the input.
-        std::vector<model::node_id> missing_nodes;
-        missing_nodes.reserve(defunct_nodes.size());
-        for (const auto& defunct_node : defunct_nodes) {
-            if (!_members_table.local().contains(defunct_node)) {
-                missing_nodes.push_back(defunct_node);
-            }
-        }
-        if (!missing_nodes.empty()) {
-            vlog(
-              clusterlog.info,
-              "Invalid request, defunct nodes refer to non existent nodes: {}",
-              missing_nodes);
-            co_return errc::invalid_request;
-        }
-
+        auto all_defunct_nodes = union_vectors(
+          defunct_nodes, _members_table.local().defunct_nodes());
+        vlog(
+          clusterlog.info,
+          "computing partitions with lost majority from nodes: {}",
+          all_defunct_nodes);
         const auto& topics = _topics.local();
         for (auto it = topics.topics_iterator_begin();
              it != topics.topics_iterator_end();
@@ -887,7 +923,7 @@ topics_frontend::partitions_with_lost_majority(
             for (const auto& assignment : assignments) {
                 const auto& current = assignment.replicas;
                 auto remaining = subtract_replica_sets_by_node_id(
-                  current, defunct_nodes);
+                  current, all_defunct_nodes);
                 auto lost_majority = remaining.size()
                                      < (current.size() / 2) + 1;
                 if (!lost_majority) {
@@ -909,7 +945,7 @@ topics_frontend::partitions_with_lost_majority(
                   std::move(ntp),
                   topic_revision,
                   assignment.replicas,
-                  defunct_nodes);
+                  all_defunct_nodes);
             }
             co_await ss::maybe_yield();
         }
