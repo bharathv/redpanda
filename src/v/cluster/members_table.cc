@@ -43,6 +43,19 @@ std::vector<model::node_id> members_table::node_ids() const {
     return ids;
 }
 
+std::vector<model::node_id> members_table::defunct_nodes() const {
+    std::vector<model::node_id> ids;
+    ids.reserve(_nodes.size());
+    for (const auto& node : _nodes) {
+        if (
+          node.second.state.get_liveness_state()
+          == model::liveness_state::defunct) {
+            ids.push_back(node.first);
+        }
+    }
+    return ids;
+}
+
 std::optional<std::reference_wrapper<const node_metadata>>
 members_table::get_node_metadata_ref(model::node_id id) const {
     auto it = _nodes.find(id);

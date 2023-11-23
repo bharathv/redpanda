@@ -861,6 +861,12 @@ topics_frontend::partitions_with_lost_majority(
         if (defunct_nodes.empty()) {
             co_return result;
         }
+        auto all_defunct_nodes = union_vectors(
+          defunct_nodes, _members_table.local().defunct_nodes());
+        vlog(
+          clusterlog.info,
+          "computing partitions with lost majority from nodes: {}",
+          all_defunct_nodes);
         const auto& topics = _topics.local();
         for (auto it = topics.topics_iterator_begin();
              it != topics.topics_iterator_end();
@@ -871,7 +877,7 @@ topics_frontend::partitions_with_lost_majority(
             for (const auto& assignment : assignments) {
                 const auto& current = assignment.replicas;
                 auto remaining = subtract_replica_sets_by_node_id(
-                  current, defunct_nodes);
+                  current, all_defunct_nodes);
                 auto lost_majority = remaining.size()
                                      < (current.size() / 2) + 1;
                 if (!lost_majority) {
@@ -893,7 +899,7 @@ topics_frontend::partitions_with_lost_majority(
                   std::move(ntp),
                   topic_revision,
                   assignment.replicas,
-                  defunct_nodes);
+                  all_defunct_nodes);
             }
             co_await ss::maybe_yield();
         }

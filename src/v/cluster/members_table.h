@@ -32,6 +32,7 @@ public:
     size_t node_count() const;
 
     std::vector<model::node_id> node_ids() const;
+    std::vector<model::node_id> defunct_nodes() const;
 
     /// Returns single broker if exists in cache
     std::optional<std::reference_wrapper<const node_metadata>>
