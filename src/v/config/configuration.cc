@@ -952,6 +952,15 @@ configuration::configuration()
       "one follower",
       {.visibility = visibility::tunable},
       16)
+  , cache_writes(
+      *this,
+      "cache_writes",
+      "Cache batches until the segment appender chunk is full, overridable at "
+      "topic level, appender_chunk_size controls how much buffer and "
+      "segment_appender_flush_timeout_ms controls the idle time after which "
+      "non-full chunk is automatically flushed..",
+      {.visibility = visibility::tunable},
+      false)
   , reclaim_min_size(
       *this,
       "reclaim_min_size",
