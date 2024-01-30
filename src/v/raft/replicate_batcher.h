@@ -33,16 +33,16 @@ public:
           std::vector<model::record_batch> batches,
           ssx::semaphore_units u,
           std::optional<model::term_id> expected_term,
-          consistency_level c_lvl,
-          std::optional<std::chrono::milliseconds> timeout)
+          replicate_options opts)
           : _record_count(record_count)
           , _data(std::move(batches))
           , _units(std::move(u))
           , _expected_term(expected_term)
-          , _consistency_lvl(c_lvl) {
+          , _consistency_lvl(opts.consistency)
+          , _flush_override(opts.flush_override) {
             _timeout_timer.set_callback([this] { expire_with_timeout(); });
-            if (timeout) {
-                _timeout_timer.arm(timeout.value());
+            if (opts.timeout) {
+                _timeout_timer.arm(opts.timeout.value());
             }
         };
 
@@ -103,6 +103,7 @@ public:
         // consistency level is stored to distinguish when an item promise
         // should be signaled with replication result
         consistency_level _consistency_lvl;
+        std::optional<flush_after_append> _flush_override;
         /**
          * Item keeps semaphore units until replicate batcher is done with
          * processing the request.
@@ -124,8 +125,7 @@ public:
     replicate_stages replicate(
       std::optional<model::term_id>,
       model::record_batch_reader,
-      consistency_level,
-      std::optional<std::chrono::milliseconds> = std::nullopt);
+      replicate_options);
 
     ss::future<> flush(ssx::semaphore_units u, bool const transfer_flush);
 
@@ -141,22 +141,19 @@ private:
     ss::future<item_ptr> do_cache(
       std::optional<model::term_id>,
       model::record_batch_reader,
-      consistency_level,
-      std::optional<std::chrono::milliseconds>);
+      replicate_options);
 
     ss::future<replicate_batcher::item_ptr> do_cache_with_backpressure(
       std::optional<model::term_id>,
       ss::circular_buffer<model::record_batch>,
       size_t,
-      consistency_level,
-      std::optional<std::chrono::milliseconds>);
+      replicate_options);
 
     ss::future<result<replicate_result>> cache_and_wait_for_result(
       ss::promise<> enqueued,
       std::optional<model::term_id> expected_term,
       model::record_batch_reader r,
-      consistency_level consistency_lvl,
-      std::optional<std::chrono::milliseconds> timeout);
+      replicate_options);
 
     consensus* _ptr;
     ssx::semaphore _max_batch_size_sem;
