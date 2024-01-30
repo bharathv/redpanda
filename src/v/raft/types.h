@@ -525,8 +525,15 @@ struct replicate_options {
       : consistency(l)
       , timeout(timeout) {}
 
+    void set_flush_override(flush_after_append override) {
+        flush_override = override;
+    }
+
     consistency_level consistency;
     std::optional<std::chrono::milliseconds> timeout;
+    // An optional flush override, if set overrides system/topic level
+    // settings.
+    std::optional<flush_after_append> flush_override;
 };
 
 struct transfer_leadership_options {
