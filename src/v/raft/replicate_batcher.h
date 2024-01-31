@@ -62,6 +62,7 @@ public:
         consistency_level get_consistency_level() const {
             return _consistency_lvl;
         }
+        auto flush_override() const { return _flush_override; }
 
         auto release_data() {
             return std::make_tuple(std::move(_data), std::move(_units));

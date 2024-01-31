@@ -214,7 +214,9 @@ ss::future<> replicate_batcher::flush(
         ss::circular_buffer<model::record_batch> data;
         std::vector<item_ptr> notifications;
         ssx::semaphore_units item_memory_units(_max_batch_size_sem, 0);
-        auto needs_flush = flush_after_append::no;
+        auto needs_flush = _ptr->log_config().cache_writes()
+                             ? flush_after_append::no
+                             : flush_after_append::yes;
 
         for (auto& n : item_cache) {
             if (
@@ -222,9 +224,9 @@ ss::future<> replicate_batcher::flush(
               || n->get_expected_term().value() == term) {
                 auto [batches, units] = n->release_data();
                 item_memory_units.adopt(std::move(units));
-                if (
-                  n->get_consistency_level() == consistency_level::quorum_ack) {
-                    needs_flush = flush_after_append::yes;
+                const auto flush_override = n->flush_override();
+                if (flush_override) {
+                    needs_flush = needs_flush || flush_override.value();
                 }
                 for (auto& b : batches) {
                     b.set_term(term);
@@ -303,7 +305,6 @@ ss::future<> replicate_batcher::do_flush(
   append_entries_request req,
   std::vector<ssx::semaphore_units> u,
   absl::flat_hash_map<vnode, follower_req_seq> seqs) {
-    auto needs_flush = req.is_flush_required();
     _ptr->_probe->replicate_batch_flushed();
     auto stm = ss::make_lw_shared<replicate_entries_stm>(
       _ptr, std::move(req), std::move(seqs));
@@ -318,6 +319,7 @@ ss::future<> replicate_batcher::do_flush(
         propagate_result(
           leader_result, notifications, [](const item_ptr& item) {
               return item->get_consistency_level()
+                       // we ignore leader_ack with flush
                        == consistency_level::leader_ack
                      || item->get_consistency_level()
                           == consistency_level::no_ack;
@@ -330,7 +332,7 @@ ss::future<> replicate_batcher::do_flush(
          * NOTE: this happens in background since we do not want to block
          * replicate batcher
          */
-        if (leader_result && needs_flush) {
+        if (leader_result) {
             (void)stm->wait_for_majority()
               .then([holder = std::move(holder),
                      notifications = std::move(notifications)](
