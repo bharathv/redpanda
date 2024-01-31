@@ -259,6 +259,7 @@ void consensus::shutdown_input() {
         _vote_timeout.cancel();
         _as.request_abort();
         _commit_index_updated.broken();
+        _majority_replicated_index_updated.broken();
         _follower_reply.broken();
     }
 }
@@ -3509,8 +3510,12 @@ void consensus::maybe_update_majority_replicated_index() {
         }
         return model::offset{};
     });
+    auto previous_majority_replicated_index = _majority_replicated_index;
     _majority_replicated_index = std::max(
       _majority_replicated_index, majority_match);
+    if (previous_majority_replicated_index != _majority_replicated_index) {
+        _majority_replicated_index_updated.broadcast();
+    }
 
     _last_leader_visible_offset = std::max(
       _last_leader_visible_offset, last_visible_index());
