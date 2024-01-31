@@ -960,7 +960,7 @@ configuration::configuration()
       "segment_appender_flush_timeout_ms controls the idle time after which "
       "non-full chunk is automatically flushed..",
       {.visibility = visibility::tunable},
-      false)
+      true)
   , reclaim_min_size(
       *this,
       "reclaim_min_size",
