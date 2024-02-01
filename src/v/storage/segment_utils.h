@@ -74,13 +74,15 @@ make_concatenated_segment(
   std::vector<ss::lw_shared_ptr<segment>>,
   compaction_config,
   storage_resources& resources,
+  probe&,
   ss::sharded<features::feature_table>& feature_table);
 
 ss::future<> write_concatenated_compacted_index(
   std::filesystem::path,
   std::vector<ss::lw_shared_ptr<segment>>,
   compaction_config,
-  storage_resources& resources);
+  storage_resources& resources,
+  probe&);
 
 ss::future<std::vector<ss::rwlock::holder>> transfer_segment(
   ss::lw_shared_ptr<segment> to,
@@ -120,6 +122,7 @@ ss::future<compacted_index_writer> make_compacted_index_writer(
   const std::filesystem::path& path,
   ss::io_priority_class iopc,
   storage_resources& resources,
+  probe&,
   std::optional<ntp_sanitizer_config> ntp_sanitizer_config);
 
 ss::future<segment_appender_ptr> make_segment_appender(
@@ -128,6 +131,7 @@ ss::future<segment_appender_ptr> make_segment_appender(
   std::optional<uint64_t> segment_size,
   ss::io_priority_class iopc,
   storage_resources& resources,
+  probe& probe,
   std::optional<ntp_sanitizer_config> ntp_sanitizer_config);
 
 size_t number_of_chunks_from_config(const storage::ntp_config&);
@@ -156,7 +160,8 @@ ss::future<> copy_filtered_entries(
 ss::future<> write_clean_compacted_index(
   storage::compacted_index_reader,
   storage::compaction_config,
-  storage_resources& resources);
+  storage_resources& resources,
+  probe&);
 
 ss::future<compacted_offset_list>
   generate_compacted_list(model::offset, storage::compacted_index_reader);

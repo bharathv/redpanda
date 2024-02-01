@@ -105,6 +105,7 @@ public:
     explicit kvstore(
       kvstore_config kv_conf,
       storage_resources&,
+      storage::probe& stg_probe,
       ss::sharded<features::feature_table>& feature_table);
     ~kvstore() noexcept;
 
@@ -212,6 +213,8 @@ private:
         model::record_batch_header _header;
         iobuf _records;
     };
+
+    storage::probe& _st_probe;
 
     friend replay_consumer;
 

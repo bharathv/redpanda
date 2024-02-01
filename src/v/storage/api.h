@@ -39,7 +39,7 @@ public:
 
     ss::future<> start() {
         _kvstore = std::make_unique<kvstore>(
-          _kv_conf_cb(), _resources, _feature_table);
+          _kv_conf_cb(), _resources, _probe, _feature_table);
         return _kvstore->start().then([this] {
             _log_mgr = std::make_unique<log_manager>(
               _log_conf_cb(), kvs(), _resources, _feature_table);
@@ -51,6 +51,7 @@ public:
 
     ss::future<> stop() {
         stop_cluster_uuid_waiters();
+        _probe.clear_metrics();
         auto f = ss::now();
         if (_log_mgr) {
             f = _log_mgr->stop();
@@ -115,6 +116,7 @@ public:
 
 private:
     storage_resources _resources;
+    probe _probe;
 
     std::function<kvstore_config()> _kv_conf_cb;
     std::function<log_config()> _log_conf_cb;

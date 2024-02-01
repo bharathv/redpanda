@@ -759,6 +759,7 @@ ss::future<ss::lw_shared_ptr<segment>> make_segment(
   unsigned read_ahead,
   std::optional<batch_cache_index> batch_cache,
   storage_resources& resources,
+  probe& probe,
   ss::sharded<features::feature_table>& feature_table,
   std::optional<ntp_sanitizer_config> ntp_sanitizer_config) {
     auto path = segment_full_path(ntpc, base_offset, term, version);
@@ -771,11 +772,11 @@ ss::future<ss::lw_shared_ptr<segment>> make_segment(
              resources,
              feature_table,
              ntp_sanitizer_config)
-      .then([path, &ntpc, pc, &resources, ntp_sanitizer_config](
+      .then([path, &ntpc, pc, &resources, &probe, ntp_sanitizer_config](
               ss::lw_shared_ptr<segment> seg) mutable {
           return with_segment(
             std::move(seg),
-            [path, &ntpc, pc, &resources, ntp_sanitizer_config](
+            [path, &ntpc, pc, &resources, &probe, ntp_sanitizer_config](
               const ss::lw_shared_ptr<segment>& seg) mutable {
                 return internal::make_segment_appender(
                          path,
@@ -783,6 +784,7 @@ ss::future<ss::lw_shared_ptr<segment>> make_segment(
                          internal::segment_size_from_config(ntpc),
                          pc,
                          resources,
+                         probe,
                          std::move(ntp_sanitizer_config))
                   .then([seg, &resources](segment_appender_ptr a) {
                       return ss::make_ready_future<ss::lw_shared_ptr<segment>>(
@@ -799,20 +801,21 @@ ss::future<ss::lw_shared_ptr<segment>> make_segment(
                   });
             });
       })
-      .then([path, &ntpc, pc, &resources, ntp_sanitizer_config](
+      .then([path, &ntpc, pc, &resources, &probe, ntp_sanitizer_config](
               ss::lw_shared_ptr<segment> seg) mutable {
           if (!ntpc.is_compacted()) {
               return ss::make_ready_future<ss::lw_shared_ptr<segment>>(seg);
           }
           return with_segment(
             seg,
-            [path, pc, &resources, ntp_sanitizer_config](
+            [path, pc, &resources, &probe, ntp_sanitizer_config](
               const ss::lw_shared_ptr<segment>& seg) mutable {
                 auto compacted_path = path.to_compacted_index();
                 return internal::make_compacted_index_writer(
                          compacted_path,
                          pc,
                          resources,
+                         probe,
                          std::move(ntp_sanitizer_config))
                   .then([seg, &resources](compacted_index_writer compact) {
                       return ss::make_ready_future<ss::lw_shared_ptr<segment>>(

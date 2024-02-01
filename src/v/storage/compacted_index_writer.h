@@ -179,6 +179,7 @@ compacted_index_writer make_file_backed_compacted_index(
   ss::io_priority_class p,
   bool truncate,
   storage_resources& resources,
+  probe& probe,
   std::optional<ntp_sanitizer_config> sanitizer_config);
 
 } // namespace storage

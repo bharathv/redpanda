@@ -151,6 +151,7 @@ ss::future<compacted_index_writer> make_compacted_index_writer(
   const std::filesystem::path& path,
   ss::io_priority_class iopc,
   storage_resources& resources,
+  probe& probe,
   std::optional<ntp_sanitizer_config> ntp_sanitizer_config) {
     return ss::make_ready_future<compacted_index_writer>(
       make_file_backed_compacted_index(
@@ -158,6 +159,7 @@ ss::future<compacted_index_writer> make_compacted_index_writer(
         iopc,
         false,
         resources,
+        probe,
         std::move(ntp_sanitizer_config)));
 }
 
@@ -167,6 +169,7 @@ ss::future<segment_appender_ptr> make_segment_appender(
   std::optional<uint64_t> segment_size,
   ss::io_priority_class iopc,
   storage_resources& resources,
+  probe& probe,
   std::optional<ntp_sanitizer_config> ntp_sanitizer_config) {
     return internal::make_writer_handle(path, std::nullopt)
       .then([number_of_chunks,
@@ -174,6 +177,7 @@ ss::future<segment_appender_ptr> make_segment_appender(
              path,
              segment_size,
              &resources,
+             &probe,
              ntp_sanitizer_config = std::move(ntp_sanitizer_config)](
               ss::file writer) mutable {
           // file_io_sanitizer requires a pointer to the appender,
@@ -196,7 +200,7 @@ ss::future<segment_appender_ptr> make_segment_appender(
               auto appender_ptr = std::make_unique<segment_appender>(
                 writer,
                 segment_appender::options(
-                  iopc, number_of_chunks, segment_size, resources));
+                  iopc, number_of_chunks, segment_size, resources, probe));
 
               if (sanitized_writer) {
                   sanitized_writer->set_pointer_to_appender(appender_ptr.get());
@@ -273,14 +277,15 @@ ss::future<> copy_filtered_entries(
 static ss::future<> do_write_clean_compacted_index(
   compacted_index_reader reader,
   compaction_config cfg,
-  storage_resources& resources) {
+  storage_resources& resources,
+  probe& probe) {
     const auto tmpname = std::filesystem::path(
       fmt::format("{}.staging", reader.path()));
     auto bitmap = co_await natural_index_of_entries_to_keep(reader);
     auto staging_to_clean = scoped_file_tracker{
       cfg.files_to_cleanup, {tmpname}};
     auto truncating_writer = make_file_backed_compacted_index(
-      tmpname.string(), cfg.iopc, true, resources, cfg.sanitizer_config);
+      tmpname.string(), cfg.iopc, true, resources, probe, cfg.sanitizer_config);
     co_await copy_filtered_entries(
       reader, std::move(bitmap), std::move(truncating_writer));
     co_await ss::rename_file(std::string(tmpname), ss::sstring(reader.path()));
@@ -290,9 +295,10 @@ static ss::future<> do_write_clean_compacted_index(
 ss::future<> write_clean_compacted_index(
   compacted_index_reader reader,
   compaction_config cfg,
-  storage_resources& resources) {
+  storage_resources& resources,
+  probe& probe) {
     // integrity verified in `do_detect_compaction_index_state`
-    return do_write_clean_compacted_index(reader, cfg, resources)
+    return do_write_clean_compacted_index(reader, cfg, resources, probe)
       .finally([reader]() mutable {
           return reader.close().then_wrapped(
             [reader](ss::future<>) { /*ignore*/ });
@@ -356,14 +362,15 @@ generate_compacted_list(model::offset o, compacted_index_reader reader) {
 ss::future<> do_compact_segment_index(
   ss::lw_shared_ptr<segment> s,
   compaction_config cfg,
-  storage_resources& resources) {
+  storage_resources& resources,
+  probe& probe) {
     auto compacted_path = s->reader().path().to_compacted_index();
     vlog(gclog.trace, "compacting segment compaction index:{}", compacted_path);
     return make_reader_handle(compacted_path, cfg.sanitizer_config)
-      .then([cfg, compacted_path, s, &resources](ss::file f) {
+      .then([cfg, compacted_path, s, &resources, &probe](ss::file f) {
           auto reader = make_file_backed_compacted_reader(
             compacted_path, std::move(f), cfg.iopc, 64_KiB);
-          return write_clean_compacted_index(reader, cfg, resources);
+          return write_clean_compacted_index(reader, cfg, resources, probe);
       });
 }
 
@@ -400,6 +407,7 @@ ss::future<storage::index_state> do_copy_segment_data(
       std::nullopt,
       cfg.iopc,
       resources,
+      pb,
       cfg.sanitizer_config);
 
     vlog(
@@ -509,7 +517,7 @@ ss::future<std::optional<size_t>> do_self_compact_segment(
 
     // broker_timestamp is used for retention.ms, but it's only in the index,
     // not it in the segment itself. save it to restore it later
-    co_await do_compact_segment_index(s, cfg, resources);
+    co_await do_compact_segment_index(s, cfg, resources, pb);
     // copy the bytes after segment is good - note that we
     // need to do it with the READ-lock, not the write lock
     auto staging_file = s->reader().path().to_staging();
@@ -555,9 +563,10 @@ ss::future<> build_compaction_index(
   fragmented_vector<model::tx_range>&& aborted_txs,
   segment_full_path p,
   compaction_config cfg,
-  storage_resources& resources) {
+  storage_resources& resources,
+  probe& probe) {
     return make_compacted_index_writer(
-             p, cfg.iopc, resources, cfg.sanitizer_config)
+             p, cfg.iopc, resources, probe, cfg.sanitizer_config)
       .then([r = std::move(rdr), stm_manager, txs = std::move(aborted_txs)](
               compacted_index_writer w) mutable {
           return ss::do_with(
@@ -633,7 +642,8 @@ ss::future<> rebuild_compaction_index(
       std::move(aborted_txs),
       idx_path,
       cfg,
-      resources);
+      resources,
+      pb);
     vlog(
       gclog.info, "rebuilt index: {}, attempting compaction again", idx_path);
 }
@@ -726,6 +736,7 @@ make_concatenated_segment(
   std::vector<ss::lw_shared_ptr<segment>> segments,
   compaction_config cfg,
   storage_resources& resources,
+  probe& probe,
   ss::sharded<features::feature_table>& feature_table) {
     // read locks on source segments
     std::vector<ss::rwlock::holder> locks;
@@ -751,7 +762,7 @@ make_concatenated_segment(
         co_await ss::remove_file(ss::sstring(compacted_idx_path));
     }
     co_await write_concatenated_compacted_index(
-      compacted_idx_path, segments, cfg, resources);
+      compacted_idx_path, segments, cfg, resources, probe);
 
     // concatenation process
     if (co_await ss::file_exists(path.string())) {
@@ -874,14 +885,15 @@ ss::future<> do_write_concatenated_compacted_index(
   std::filesystem::path target_path,
   std::vector<ss::lw_shared_ptr<segment>>& segments,
   compaction_config cfg,
-  storage_resources& resources) {
+  storage_resources& resources,
+  probe& probe) {
     return make_indices_readers(segments, cfg.iopc, cfg.sanitizer_config)
-      .then([cfg, target_path = std::move(target_path), &resources](
+      .then([cfg, target_path = std::move(target_path), &resources, &probe](
               std::vector<compacted_index_reader> readers) mutable {
           vlog(gclog.debug, "concatenating {} indicies", readers.size());
           return ss::do_with(
             std::move(readers),
-            [cfg, target_path = std::move(target_path), &resources](
+            [cfg, target_path = std::move(target_path), &resources, &probe](
               std::vector<compacted_index_reader>& readers) mutable {
                 return ss::parallel_for_each(
                          readers.begin(),
@@ -902,7 +914,8 @@ ss::future<> do_write_concatenated_compacted_index(
                   .then([cfg,
                          target_path = std::move(target_path),
                          &readers,
-                         &resources](bool verified_successfully) {
+                         &resources,
+                         &probe](bool verified_successfully) {
                       if (!verified_successfully) {
                           return ss::now();
                       }
@@ -911,6 +924,7 @@ ss::future<> do_write_concatenated_compacted_index(
                                target_path,
                                cfg.iopc,
                                resources,
+                               probe,
                                cfg.sanitizer_config)
                         .then([&readers](compacted_index_writer writer) {
                             return rewrite_concatenated_indicies(
@@ -930,7 +944,8 @@ ss::future<> write_concatenated_compacted_index(
   std::filesystem::path target_path,
   std::vector<ss::lw_shared_ptr<segment>> segments,
   compaction_config cfg,
-  storage_resources& resources) {
+  storage_resources& resources,
+  probe& probe) {
     if (segments.empty()) {
         return ss::now();
     }
@@ -938,10 +953,10 @@ ss::future<> write_concatenated_compacted_index(
     readers.reserve(segments.size());
     return ss::do_with(
       std::move(segments),
-      [cfg, target_path = std::move(target_path), &resources](
+      [cfg, target_path = std::move(target_path), &resources, &probe](
         std::vector<ss::lw_shared_ptr<segment>>& segments) mutable {
           return do_write_concatenated_compacted_index(
-            std::move(target_path), segments, cfg, resources);
+            std::move(target_path), segments, cfg, resources, probe);
       });
 }
 

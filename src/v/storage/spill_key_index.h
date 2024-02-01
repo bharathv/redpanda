@@ -50,13 +50,15 @@ public:
       ss::io_priority_class,
       bool truncate,
       storage_resources&,
+      probe&,
       std::optional<ntp_sanitizer_config> sanitizer_config);
 
     spill_key_index(
       ss::sstring name,
       ss::file dummy_file,
       size_t max_mem,
-      storage_resources&);
+      storage_resources&,
+      probe&);
 
     spill_key_index(const spill_key_index&) = delete;
     spill_key_index& operator=(const spill_key_index&) = delete;
@@ -123,6 +125,7 @@ private:
 
     std::optional<ntp_sanitizer_config> _sanitizer_config;
     storage_resources& _resources;
+    probe& _probe;
     ss::io_priority_class _pc;
     bool _truncate;
     std::optional<segment_appender> _appender;

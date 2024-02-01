@@ -152,6 +152,21 @@ void probe::setup_metrics(const model::ntp& ntp) {
           [this] { return _partition_bytes; },
           sm::description("Current size of partition in bytes"),
           labels),
+        sm::make_gauge(
+          "num_fsyncs",
+          [this] { return _num_fsyncs; },
+          sm::description("number of fsyncs"),
+          labels),
+        sm::make_histogram(
+          "dma_write_size",
+          [this] { return _dma_write_sizes.internal_histogram_logform(); },
+          sm::description("dma write size"),
+          labels),
+        sm::make_gauge(
+          "bytes_amplified",
+          [this] { return _bytes_amplification; },
+          sm::description("write amplification from storage"),
+          labels),
       },
       {},
       {sm::shard_label, partition_label});

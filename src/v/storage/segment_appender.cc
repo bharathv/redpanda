@@ -17,6 +17,7 @@
 #include "ssx/semaphore.h"
 #include "storage/chunk_cache.h"
 #include "storage/logger.h"
+#include "storage/probe.h"
 #include "storage/segment_appender_utils.h"
 #include "storage/storage_resources.h"
 
@@ -190,6 +191,10 @@ ss::future<> segment_appender::do_append(const char* buf, size_t n) {
     }
 }
 
+ss::future<> segment_appender::do_flush() {
+    return _out.flush().then([this] { _opts.probe.fsync(); });
+}
+
 void segment_appender::check_no_dispatched_writes() {
     vassert(
       _inflight_dispatched == 0, "Unexpected pending head write {}", *this);
@@ -279,7 +284,7 @@ ss::future<> segment_appender::hydrate_last_half_page() {
 
 ss::future<> segment_appender::do_truncation(size_t n) {
     return _out.truncate(n)
-      .then([this] { return _out.flush(); })
+      .then([this] { return do_flush(); })
       .handle_exception([n, this](std::exception_ptr e) {
           vassert(
             false,
@@ -436,7 +441,7 @@ ss::future<> segment_appender::process_flush_ops(size_t committed) {
 
     _flush_ops.pop_back_n(std::distance(flushable, _flush_ops.end()));
 
-    return _out.flush().then([this, committed, ops = std::move(ops)]() mutable {
+    return do_flush().then([this, committed, ops = std::move(ops)]() mutable {
         // Inflight_dispatched is incremented right before a write is dispatched
         // and then must be decremented when the write is "finished", where we
         // don't consider the write finished until any associated flush
@@ -589,6 +594,10 @@ void segment_appender::dispatch_background_head_write() {
                           return size_missmatch_error(
                             "chunk::write", expected, got);
                       }
+                      _opts.probe.dma_write(got);
+                      if (got < _chunk_size) {
+                          _opts.probe.wastage(_chunk_size - got);
+                      }
                       return maybe_advance_stable_offset(w);
                   })
                   .finally([u = std::move(u)] {});
@@ -630,7 +639,7 @@ ss::future<> segment_appender::flush() {
       _stable_offset,
       *this);
 
-    return _out.flush().handle_exception([this](std::exception_ptr e) {
+    return do_flush().handle_exception([this](std::exception_ptr e) {
         vassert(false, "Could not flush: {} - {}", e, *this);
     });
 }
@@ -649,7 +658,7 @@ ss::future<> segment_appender::hard_flush() {
                    _flush_ops.empty(),
                    "Pending flushes after hard flush {}",
                    *this);
-                 return _out.flush();
+                 return do_flush();
              })
       .handle_exception([this](std::exception_ptr e) {
           vassert(false, "Could not flush: {} - {}", e, *this);

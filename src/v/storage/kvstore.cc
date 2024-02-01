@@ -38,6 +38,7 @@ namespace storage {
 kvstore::kvstore(
   kvstore_config kv_conf,
   storage_resources& resources,
+  storage::probe& st_probe,
   ss::sharded<features::feature_table>& feature_table)
   : _conf(kv_conf)
   , _resources(resources)
@@ -47,7 +48,8 @@ kvstore::kvstore(
       std::filesystem::path(_ntpc.work_directory()),
       simple_snapshot_manager::default_snapshot_filename,
       ss::default_priority_class())
-  , _timer([this] { _sem.signal(); }) {
+  , _timer([this] { _sem.signal(); })
+  , _st_probe(st_probe) {
     if (_conf.sanitizer_config) {
         _ntp_sanitizer_config = _conf.sanitizer_config->get_config_for_ntp(
           _ntpc.ntp());
@@ -282,6 +284,7 @@ ss::future<> kvstore::roll() {
                  config::shard_local_cfg().storage_read_readahead_count(),
                  std::nullopt,
                  _resources,
+                 _st_probe,
                  _feature_table,
                  _ntp_sanitizer_config)
           .then([this](ss::lw_shared_ptr<segment> seg) {
@@ -325,6 +328,7 @@ ss::future<> kvstore::roll() {
                        config::shard_local_cfg().storage_read_readahead_count(),
                        std::nullopt,
                        _resources,
+                       _st_probe,
                        _feature_table,
                        _ntp_sanitizer_config)
                 .then([this](ss::lw_shared_ptr<segment> seg) {

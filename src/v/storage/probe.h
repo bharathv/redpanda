@@ -15,6 +15,7 @@
 #include "storage/fwd.h"
 #include "storage/logger.h"
 #include "storage/types.h"
+#include "utils/log_hist.h"
 
 #include <seastar/core/metrics_registration.hh>
 #include <seastar/core/shared_ptr.hh>
@@ -108,6 +109,11 @@ public:
     void set_compaction_ratio(double r) { _compaction_ratio = r; }
 
     int64_t get_batch_parse_errors() const { return _batch_parse_errors; }
+
+    void fsync() { _num_fsyncs++; }
+    void dma_write(size_t dma_size) { _dma_write_sizes.record(dma_size); }
+    void wastage(size_t size) { _bytes_amplification += size; }
+
     /**
      * Clears all probe related metrics
      */
@@ -131,6 +137,10 @@ private:
     uint32_t _batch_parse_errors = 0;
     uint32_t _batch_write_errors = 0;
     double _compaction_ratio = 1.0;
+    size_t _num_fsyncs = 0;
+    log_hist_internal _dma_write_sizes;
+    size_t _bytes_amplification = 0;
+
     metrics::internal_metric_groups _metrics;
 };
 } // namespace storage

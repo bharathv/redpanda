@@ -61,11 +61,13 @@ public:
           ss::io_priority_class p,
           size_t chunks_no,
           std::optional<uint64_t> s,
-          storage_resources& r)
+          storage_resources& r,
+          probe& pb)
           : priority(p)
           , number_of_chunks(chunks_no)
           , segment_size(s)
-          , resources(r) {}
+          , resources(r)
+          , probe(pb) {}
 
         ss::io_priority_class priority;
         size_t number_of_chunks;
@@ -75,6 +77,7 @@ public:
         // more space than a segment would ever need.
         std::optional<uint64_t> segment_size;
         storage_resources& resources;
+        probe& probe;
     };
 
     segment_appender(ss::file f, options opts);
@@ -157,6 +160,8 @@ private:
     ss::future<> hydrate_last_half_page();
     ss::future<> do_truncation(size_t);
     ss::future<> do_append(const char* buf, size_t n);
+    // make the changes durable
+    ss::future<> do_flush();
 
     /*
      * committed offset isn't updated until the background write is dispatched.

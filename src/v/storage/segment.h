@@ -316,6 +316,7 @@ ss::future<ss::lw_shared_ptr<segment>> make_segment(
   unsigned read_ahead,
   std::optional<batch_cache_index> batch_cache,
   storage_resources&,
+  probe&,
   ss::sharded<features::feature_table>& feature_table,
   std::optional<ntp_sanitizer_config> ntp_sanitizer_config);
 
