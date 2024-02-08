@@ -2590,7 +2590,10 @@ ss::future<> disk_log_impl::do_truncate(
         co_return;
     }
 
+    // Make sure all in-memory data is flushed to disk as we'll have to read it
+    // for figuring out the physical offset.
     co_await last->flush();
+
     /**
      * We look for the offset preceding the the requested truncation offset.
      *
