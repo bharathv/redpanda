@@ -376,6 +376,13 @@ configuration::configuration()
       "raft_flush_timer_interval_ms",
       "Interval of checking partition against the "
       "`raft_replica_max_pending_flush_bytes`",
+      {.needs_restart = needs_restart::no,
+       .visibility = visibility::deprecated},
+      100ms)
+  , raft_flush_max_delay_ms(
+      *this,
+      "raft_flush_max_delay_ms",
+      "ms since last flush, pending data is flushed immediately",
       {.needs_restart = needs_restart::no, .visibility = visibility::tunable},
       100ms)
   , enable_usage(

@@ -51,30 +51,17 @@ group_manager::group_manager(
       _configuration.recovery_concurrency_per_shard,
       _configuration.heartbeat_interval)
   , _feature_table(feature_table.local())
-  , _flush_timer_jitter(_configuration.flush_timer_interval_ms)
   , _is_ready(false) {
-    _flush_timer.set_callback([this] {
-        ssx::spawn_with_gate(_gate, [this] {
-            return flush_groups().finally([this] {
-                if (_gate.is_closed()) {
-                    return;
-                }
-                _flush_timer.arm(_flush_timer_jitter());
-            });
-        });
-    });
     setup_metrics();
 }
 
 ss::future<> group_manager::start() {
     co_await _heartbeats.start();
     co_await _recovery_scheduler.start();
-    _flush_timer.arm(_flush_timer_jitter());
 }
 
 ss::future<> group_manager::stop() {
     auto f = _gate.close();
-    _flush_timer.cancel();
 
     f = f.then([this] { return _recovery_scheduler.stop(); });
 
@@ -230,22 +217,4 @@ void group_manager::setup_metrics() {
         sm::description("Number of raft groups"))});
 }
 
-ss::future<> group_manager::flush_groups() {
-    /**
-     * Assumes that gate is already held
-     */
-    auto u = co_await _groups_mutex.get_units();
-
-    co_await ss::max_concurrent_for_each(
-      _groups.begin(),
-      _groups.end(),
-      32,
-      [this](const ss::lw_shared_ptr<consensus>& raft) {
-          if (_configuration.replica_max_not_flushed_bytes()) {
-              return raft->maybe_flush_log(
-                _configuration.replica_max_not_flushed_bytes().value());
-          }
-          return ss::now();
-      });
-}
 } // namespace raft

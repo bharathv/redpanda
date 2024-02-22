@@ -362,7 +362,7 @@ public:
         return _received_snapshot_index;
     }
     size_t received_snapshot_bytes() const { return _received_snapshot_bytes; }
-    bool has_pending_flushes() const { return _not_flushed_bytes > 0; }
+    bool has_pending_flushes() const { return _pending_flush_bytes > 0; }
 
     model::offset start_offset() const {
         return model::next_offset(_last_snapshot_index);
@@ -510,13 +510,10 @@ public:
     get_follower_recovery_state() const {
         return _follower_recovery_state;
     }
-    /**
-     * Flushes underlying log only if there are more not flushed bytes than the
-     * requested threshold.
-     */
-    ss::future<> maybe_flush_log(size_t threshold_bytes);
 
     inline void maybe_update_leader(vnode request_node);
+
+    void ntp_properties_updated() noexcept { signal_background_flusher(); }
 
 private:
     friend replicate_entries_stm;
@@ -768,6 +765,11 @@ private:
         return _features.is_active(features::feature::raft_config_serde);
     }
 
+    ss::future<> background_flush_loop();
+    ss::future<> maybe_flush_log();
+    // Each iteration of the flusher will pickup any updated configurations
+    void signal_background_flusher() noexcept { _bg_flush_cv.signal(); }
+
     // args
     vnode _self;
     raft::group_id _group;
@@ -819,7 +821,7 @@ private:
     follower_stats _fstats;
 
     replicate_batcher _batcher;
-    size_t _not_flushed_bytes{0};
+    size_t _pending_flush_bytes{0};
 
     /// used to wait for background ops before shutting down
     ss::gate _bg;
@@ -863,6 +865,9 @@ private:
     std::optional<voter_priority> _node_priority_override;
     keep_snapshotted_log _keep_snapshotted_log;
 
+    ss::condition_variable _bg_flush_cv;
+    clock_type::time_point _last_flush_time;
+
     // used to track currently installed snapshot
     model::offset _received_snapshot_index;
     size_t _received_snapshot_bytes = 0;
@@ -886,6 +891,9 @@ private:
      * queue to regulate how many raft groups can go into recovery concurrently.
      */
     std::optional<follower_recovery_state> _follower_recovery_state;
+
+    config::binding<size_t> _flush_max_pending_bytes;
+    config::binding<std::chrono::milliseconds> _flush_max_delay_ms;
 
     friend std::ostream& operator<<(std::ostream&, const consensus&);
 };

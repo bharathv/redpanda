@@ -74,6 +74,9 @@ public:
 
         std::optional<bool> cache_writes;
 
+        std::optional<std::chrono::milliseconds> flush_ms;
+        std::optional<size_t> flush_pending_bytes;
+
         friend std::ostream&
         operator<<(std::ostream&, const default_overrides&);
     };
@@ -267,6 +270,20 @@ public:
         auto cluster_default = config::shard_local_cfg().cache_writes();
         return _overrides ? _overrides->cache_writes.value_or(cluster_default)
                           : cluster_default;
+    }
+
+    std::chrono::milliseconds flush_ms() const {
+        if (_overrides && _overrides->flush_ms) {
+            return _overrides->flush_ms.value();
+        }
+        return config::shard_local_cfg().raft_flush_max_delay_ms();
+    }
+
+    size_t flush_pending_bytes() const {
+        if (_overrides && _overrides->flush_pending_bytes) {
+            return _overrides->flush_pending_bytes.value();
+        }
+        return config::shard_local_cfg().raft_replica_max_pending_flush_bytes();
     }
 
 private:

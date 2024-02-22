@@ -20,8 +20,12 @@ class PeriodicFlushWithRelaxedConsistencyTest(EndToEndTest):
 
         self.start_redpanda(num_nodes=3)
         # set raft_max_not_flushed_bytes to high value
-        self.redpanda.set_cluster_config(
-            {"raft_replica_max_pending_flush_bytes": 10 * (1024 * 1024)})
+        self.redpanda.set_cluster_config({
+            "raft_replica_max_pending_flush_bytes":
+            10 * (1024 * 1024),
+            "raft_flush_max_delay_ms":
+            3600000
+        })
 
         # create topic with single partition
         spec = TopicSpec(partition_count=1, replication_factor=3)
@@ -55,8 +59,7 @@ class PeriodicFlushWithRelaxedConsistencyTest(EndToEndTest):
             for r in p_state['replicas']
         ]), "With ACKS=1, committed offset should not be advanced immediately"
 
-        self.redpanda.set_cluster_config(
-            {"raft_replica_max_pending_flush_bytes": 1})
+        self.redpanda.set_cluster_config({"raft_flush_max_delay_ms": 1})
 
         def committed_offset_advanced():
             p_state = admin.get_partition_state(namespace='kafka',

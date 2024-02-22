@@ -146,7 +146,11 @@ consensus::consensus(
   , _configuration_manager(std::move(initial_cfg), _group, _storage, _ctxlog)
   , _node_priority_override(voter_priority_override)
   , _keep_snapshotted_log(should_keep_snapshotted_log)
-  , _append_requests_buffer(*this, 256) {
+  , _append_requests_buffer(*this, 256)
+  , _flush_max_pending_bytes(
+      config::shard_local_cfg().raft_replica_max_pending_flush_bytes.bind())
+  , _flush_max_delay_ms(
+      config::shard_local_cfg().raft_flush_max_delay_ms.bind()) {
     setup_metrics();
     setup_public_metrics();
     update_follower_stats(_configuration_manager.get_latest());
@@ -154,6 +158,9 @@ consensus::consensus(
         maybe_step_down();
         dispatch_vote(false);
     });
+    ssx::spawn_with_gate(_bg, [this] { return background_flush_loop(); });
+    _flush_max_delay_ms.watch([this]() { signal_background_flusher(); });
+    _flush_max_pending_bytes.watch([this]() { signal_background_flusher(); });
 }
 
 void consensus::setup_metrics() {
@@ -278,6 +285,7 @@ ss::future<> consensus::stop() {
     co_await _batcher.stop();
 
     _op_lock.broken();
+    _bg_flush_cv.broken();
     co_await _bg.close();
 
     // close writer if we have to
@@ -290,6 +298,23 @@ ss::future<> consensus::stop() {
      */
     _metrics.clear();
     _probe->clear();
+}
+
+ss::future<> consensus::background_flush_loop() {
+    while (!_bg.is_closed()) {
+        try {
+            // todo: add some jitter so all instances don't flush
+            // at once.
+            co_await _bg_flush_cv.wait(log_config().flush_ms());
+        } catch (const ss::condition_variable_timed_out&) {
+        }
+        vlog(_ctxlog.info, "Invoking maybeflush_log");
+        co_await maybe_flush_log().handle_exception(
+          [this](const std::exception_ptr& ex) {
+              vlog(
+                _ctxlog.debug, "Ignoring error from background flush: {}", ex);
+          });
+    }
 }
 
 consensus::success_reply consensus::update_follower_index(
@@ -2635,7 +2660,8 @@ ss::future<consensus::flushed> consensus::flush_log() {
     auto flushed_up_to = _log->offsets().dirty_offset;
     const auto prior_truncations = _log->get_log_truncation_counter();
     _probe->log_flushed();
-    _not_flushed_bytes = 0;
+    _pending_flush_bytes = 0;
+    _last_flush_time = clock_type::now();
     co_await _log->flush();
     const auto lstats = _log->offsets();
     /**
@@ -2710,6 +2736,7 @@ ss::future<storage::append_result> consensus::disk_append(
       .then([this, should_update_last_quorum_idx](
               std::tuple<ret_t, std::vector<offset_configuration>> t) {
           auto& [ret, configurations] = t;
+          _pending_flush_bytes += ret.byte_size;
           if (should_update_last_quorum_idx) {
               /**
                * We have to update last quorum replicated index before we
@@ -2718,8 +2745,9 @@ ss::future<storage::append_result> consensus::disk_append(
                * replicated index.
                */
               _last_quorum_replicated_index = ret.last_offset;
+          } else {
+              signal_background_flusher();
           }
-          _not_flushed_bytes += ret.byte_size;
           // TODO
           // if we rolled a log segment. write current configuration
           // for speedy recovery in the background
@@ -3884,11 +3912,16 @@ void consensus::upsert_recovery_state(
     }
 }
 
-ss::future<> consensus::maybe_flush_log(size_t threshold_bytes) {
-    // if there is nothing to do exit without grabbing an op_lock, this check is
-    // sloppy as we data can be in flight but it is ok since next check will
-    // detect it and flush log.
-    if (_not_flushed_bytes < threshold_bytes) {
+ss::future<> consensus::maybe_flush_log() {
+    if (_pending_flush_bytes == 0) {
+        co_return;
+    }
+    auto ms_since_last_flush
+      = std::chrono::duration_cast<std::chrono::milliseconds>(
+        clock_type::now() - _last_flush_time);
+    if (
+      _pending_flush_bytes < log_config().flush_pending_bytes()
+      && ms_since_last_flush < log_config().flush_ms()) {
         co_return;
     }
     try {
