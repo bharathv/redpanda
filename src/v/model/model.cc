@@ -497,4 +497,25 @@ std::istream& operator>>(std::istream& i, fetch_read_strategy& strat) {
     return i;
 }
 
+std::ostream& operator<<(std::ostream& o, write_caching_mode mode) {
+    o << write_caching_mode_to_string(mode);
+    return o;
+}
+
+std::istream& operator>>(std::istream& i, write_caching_mode& mode) {
+    ss::sstring s;
+    i >> s;
+    mode = string_switch<write_caching_mode>(s)
+             .match(
+               write_caching_mode_to_string(write_caching_mode::on),
+               write_caching_mode::on)
+             .match(
+               write_caching_mode_to_string(write_caching_mode::off),
+               write_caching_mode::off)
+             .match(
+               write_caching_mode_to_string(write_caching_mode::disabled),
+               write_caching_mode::disabled);
+    return i;
+}
+
 } // namespace model

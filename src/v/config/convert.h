@@ -531,4 +531,36 @@ struct convert<model::fetch_read_strategy> {
     }
 };
 
+template<>
+struct convert<model::write_caching_mode> {
+    using type = model::write_caching_mode;
+
+    static constexpr auto acceptable_values = std::to_array(
+      {model::write_caching_mode_to_string(type::on),
+       model::write_caching_mode_to_string(type::off),
+       model::write_caching_mode_to_string(type::disabled)});
+
+    static Node encode(const type& rhs) { return Node(fmt::format("{}", rhs)); }
+
+    static bool decode(const Node& node, type& rhs) {
+        auto value = node.as<std::string>();
+
+        if (
+          std::find(acceptable_values.begin(), acceptable_values.end(), value)
+          == acceptable_values.end()) {
+            return false;
+        }
+
+        rhs = string_switch<type>(std::string_view{value})
+                .match(model::write_caching_mode_to_string(type::on), type::on)
+                .match(
+                  model::write_caching_mode_to_string(type::off), type::off)
+                .match(
+                  model::write_caching_mode_to_string(type::disabled),
+                  type::disabled);
+
+        return true;
+    }
+};
+
 } // namespace YAML
