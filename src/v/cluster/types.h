@@ -1477,7 +1477,7 @@ using vcluster_id = named_type<xid, struct v_cluster_id_tag>;
  */
 struct topic_properties
   : serde::
-      envelope<topic_properties, serde::version<6>, serde::compat_version<0>> {
+      envelope<topic_properties, serde::version<7>, serde::compat_version<0>> {
     topic_properties() noexcept = default;
     topic_properties(
       std::optional<model::compression> compression,
@@ -1510,7 +1510,8 @@ struct topic_properties
       std::optional<pandaproxy::schema_registry::subject_name_strategy>
         record_value_subject_name_strategy_compat,
       tristate<size_t> initial_retention_local_target_bytes,
-      tristate<std::chrono::milliseconds> initial_retention_local_target_ms)
+      tristate<std::chrono::milliseconds> initial_retention_local_target_ms,
+      std::optional<model::write_caching_mode> write_caching)
       : compression(compression)
       , cleanup_policy_bitflags(cleanup_policy_bitflags)
       , compaction_strategy(compaction_strategy)
@@ -1542,7 +1543,8 @@ struct topic_properties
           record_value_subject_name_strategy_compat)
       , initial_retention_local_target_bytes(
           initial_retention_local_target_bytes)
-      , initial_retention_local_target_ms(initial_retention_local_target_ms) {}
+      , initial_retention_local_target_ms(initial_retention_local_target_ms)
+      , write_caching(write_caching) {}
 
     std::optional<model::compression> compression;
     std::optional<model::cleanup_policy_bitflags> cleanup_policy_bitflags;
@@ -1584,6 +1586,7 @@ struct topic_properties
     tristate<size_t> initial_retention_local_target_bytes{std::nullopt};
     tristate<std::chrono::milliseconds> initial_retention_local_target_ms{
       std::nullopt};
+    std::optional<model::write_caching_mode> write_caching;
 
     bool is_compacted() const;
     bool has_overrides() const;
@@ -1708,7 +1711,7 @@ struct property_update<tristate<T>>
 struct incremental_topic_updates
   : serde::envelope<
       incremental_topic_updates,
-      serde::version<5>,
+      serde::version<6>,
       serde::compat_version<0>> {
     static constexpr int8_t version_with_data_policy = -1;
     static constexpr int8_t version_with_shadow_indexing = -3;
@@ -1762,6 +1765,7 @@ struct incremental_topic_updates
     property_update<tristate<size_t>> initial_retention_local_target_bytes;
     property_update<tristate<std::chrono::milliseconds>>
       initial_retention_local_target_ms;
+    property_update<std::optional<model::write_caching_mode>> write_caching;
 
     auto serde_fields() {
         return std::tie(
@@ -1787,7 +1791,8 @@ struct incremental_topic_updates
           record_value_subject_name_strategy,
           record_value_subject_name_strategy_compat,
           initial_retention_local_target_bytes,
-          initial_retention_local_target_ms);
+          initial_retention_local_target_ms,
+          write_caching);
     }
 
     friend std::ostream&

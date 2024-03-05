@@ -350,6 +350,7 @@ struct compat_check<cluster::topic_properties> {
         json_write(record_value_subject_name_strategy_compat);
         json_write(initial_retention_local_target_bytes);
         json_write(initial_retention_local_target_ms);
+        json_write(write_caching);
     }
 
     static cluster::topic_properties from_json(json::Value& rd) {
@@ -381,6 +382,7 @@ struct compat_check<cluster::topic_properties> {
         json_read(record_value_subject_name_strategy_compat);
         json_read(initial_retention_local_target_bytes);
         json_read(initial_retention_local_target_ms);
+        json_read(write_caching);
         return obj;
     }
 
@@ -407,6 +409,7 @@ struct compat_check<cluster::topic_properties> {
           std::nullopt};
         obj.initial_retention_local_target_ms
           = tristate<std::chrono::milliseconds>{std::nullopt};
+        obj.write_caching = std::nullopt;
 
         if (reply != obj) {
             throw compat_error(fmt::format(
@@ -481,6 +484,7 @@ struct compat_check<cluster::topic_configuration> {
           std::nullopt};
         obj.properties.initial_retention_local_target_ms
           = tristate<std::chrono::milliseconds>{std::nullopt};
+        obj.properties.write_caching = std::nullopt;
 
         if (cfg != obj) {
             throw compat_error(fmt::format(
@@ -544,6 +548,7 @@ struct compat_check<cluster::create_topics_request> {
               = tristate<size_t>{std::nullopt};
             topic.properties.initial_retention_local_target_ms
               = tristate<std::chrono::milliseconds>{std::nullopt};
+            topic.properties.write_caching = std::nullopt;
         }
         if (req != obj) {
             throw compat_error(fmt::format(
@@ -606,6 +611,7 @@ struct compat_check<cluster::create_topics_reply> {
               = tristate<size_t>{std::nullopt};
             topic.properties.initial_retention_local_target_ms
               = tristate<std::chrono::milliseconds>{std::nullopt};
+            topic.properties.write_caching = std::nullopt;
         }
         if (reply != obj) {
             throw compat_error(fmt::format(

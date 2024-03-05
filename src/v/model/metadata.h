@@ -573,6 +573,9 @@ constexpr const char* write_caching_mode_to_string(write_caching_mode s) {
     }
 }
 
+std::optional<write_caching_mode>
+  write_caching_mode_from_string(std::string_view);
+
 std::ostream& operator<<(std::ostream&, write_caching_mode);
 std::istream& operator>>(std::istream&, write_caching_mode&);
 
