@@ -351,6 +351,8 @@ struct compat_check<cluster::topic_properties> {
         json_write(initial_retention_local_target_bytes);
         json_write(initial_retention_local_target_ms);
         json_write(write_caching);
+        json_write(flush_ms);
+        json_write(flush_bytes);
     }
 
     static cluster::topic_properties from_json(json::Value& rd) {
@@ -383,6 +385,8 @@ struct compat_check<cluster::topic_properties> {
         json_read(initial_retention_local_target_bytes);
         json_read(initial_retention_local_target_ms);
         json_read(write_caching);
+        json_read(flush_ms);
+        json_read(flush_bytes);
         return obj;
     }
 
@@ -410,6 +414,8 @@ struct compat_check<cluster::topic_properties> {
         obj.initial_retention_local_target_ms
           = tristate<std::chrono::milliseconds>{std::nullopt};
         obj.write_caching = std::nullopt;
+        obj.flush_bytes = std::nullopt;
+        obj.flush_ms = std::nullopt;
 
         if (reply != obj) {
             throw compat_error(fmt::format(
@@ -485,6 +491,8 @@ struct compat_check<cluster::topic_configuration> {
         obj.properties.initial_retention_local_target_ms
           = tristate<std::chrono::milliseconds>{std::nullopt};
         obj.properties.write_caching = std::nullopt;
+        obj.properties.flush_bytes = std::nullopt;
+        obj.properties.flush_ms = std::nullopt;
 
         if (cfg != obj) {
             throw compat_error(fmt::format(
@@ -549,6 +557,8 @@ struct compat_check<cluster::create_topics_request> {
             topic.properties.initial_retention_local_target_ms
               = tristate<std::chrono::milliseconds>{std::nullopt};
             topic.properties.write_caching = std::nullopt;
+            topic.properties.flush_bytes = std::nullopt;
+            topic.properties.flush_ms = std::nullopt;
         }
         if (req != obj) {
             throw compat_error(fmt::format(
@@ -612,6 +622,8 @@ struct compat_check<cluster::create_topics_reply> {
             topic.properties.initial_retention_local_target_ms
               = tristate<std::chrono::milliseconds>{std::nullopt};
             topic.properties.write_caching = std::nullopt;
+            topic.properties.flush_bytes = std::nullopt;
+            topic.properties.flush_ms = std::nullopt;
         }
         if (reply != obj) {
             throw compat_error(fmt::format(
