@@ -661,7 +661,8 @@ std::ostream& operator<<(std::ostream& o, const incremental_topic_updates& i) {
       "record_value_subject_name_strategy: {}"
       "record_value_subject_name_strategy_compat: {}, "
       "initial_retention_local_target_bytes: {}, "
-      "initial_retention_local_target_ms: {}, write_caching: {}",
+      "initial_retention_local_target_ms: {}, write_caching: {}, flush_ms: {}, "
+      "flush_bytes: {}",
       i.compression,
       i.cleanup_policy_bitflags,
       i.compaction_strategy,
@@ -685,7 +686,9 @@ std::ostream& operator<<(std::ostream& o, const incremental_topic_updates& i) {
       i.record_value_subject_name_strategy_compat,
       i.initial_retention_local_target_bytes,
       i.initial_retention_local_target_ms,
-      i.write_caching);
+      i.write_caching,
+      i.flush_ms,
+      i.flush_bytes);
     return o;
 }
 
@@ -1819,7 +1822,10 @@ void adl<cluster::incremental_topic_updates>::to(
       t.record_value_subject_name_strategy,
       t.record_value_subject_name_strategy_compat,
       t.initial_retention_local_target_bytes,
-      t.initial_retention_local_target_ms);
+      t.initial_retention_local_target_ms,
+      t.write_caching,
+      t.flush_ms,
+      t.flush_bytes);
 }
 
 cluster::incremental_topic_updates
@@ -1939,6 +1945,19 @@ adl<cluster::incremental_topic_updates>::from(iobuf_parser& in) {
         updates.initial_retention_local_target_ms
           = adl<cluster::property_update<tristate<std::chrono::milliseconds>>>{}
               .from(in);
+    }
+
+    if (
+      version
+      <= cluster::incremental_topic_updates::version_with_write_caching) {
+        updates.write_caching = adl<cluster::property_update<
+          std::optional<model::write_caching_mode>>>{}
+                                  .from(in);
+        updates.flush_ms = adl<cluster::property_update<
+          std::optional<std::chrono::milliseconds>>>{}
+                             .from(in);
+        updates.flush_bytes
+          = adl<cluster::property_update<std::optional<size_t>>>{}.from(in);
     }
 
     return updates;
