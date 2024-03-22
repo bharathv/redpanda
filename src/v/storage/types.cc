@@ -79,9 +79,10 @@ std::ostream& operator<<(std::ostream& o, const append_result& a) {
              << std::chrono::duration_cast<std::chrono::milliseconds>(
                   a.append_time.time_since_epoch())
                   .count()
-             << ", base_offset:" << a.base_offset
-             << ", last_offset:" << a.last_offset
-             << ", byte_size:" << a.byte_size << "}";
+             << ", base_offset: " << a.base_offset
+             << ", last_offset: " << a.last_offset
+             << ", last_term: " << a.last_term << ", byte_size: " << a.byte_size
+             << "}";
 }
 std::ostream& operator<<(std::ostream& o, const timequery_result& a) {
     return o << "{offset:" << a.offset << ", time:" << a.time << "}";
