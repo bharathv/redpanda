@@ -516,7 +516,12 @@ public:
     size_t flush_bytes() const { return _max_pending_flush_bytes; }
     std::chrono::milliseconds flush_ms() const { return _max_flush_delay_ms; }
 
+    replication_monitor& replication_monitor() const {
+        return _replication_monitor;
+    }
+
 private:
+    friend replication_monitor;
     friend replicate_entries_stm;
     friend vote_stm;
     friend recovery_stm;
