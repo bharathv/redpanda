@@ -623,6 +623,9 @@ private:
     /// \brief _does not_ hold the lock.
     using flushed = ss::bool_class<struct flushed_executed_tag>;
     ss::future<flushed> flush_log();
+    void background_flush_log();
+    void maybe_schedule_flush();
+    bool _background_flush_pending = false;
 
     void maybe_step_down();
 
@@ -766,8 +769,7 @@ private:
     }
 
     flush_delay_t compute_max_flush_delay() const;
-    ss::future<> maybe_flush_log();
-    ss::future<> background_flusher();
+    ss::future<> do_background_flush_log();
 
     // args
     vnode _self;
@@ -899,7 +901,8 @@ private:
     // Its a variant to workaround a bug in cv::wait() method,
     // check comment in compute_max_flush_delay() for details
     flush_delay_t _max_flush_delay;
-    ss::condition_variable _background_flusher;
+
+    ss::timer<ss::lowres_clock> _background_flusher;
 
     replication_monitor _replication_monitor;
 

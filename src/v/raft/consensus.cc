@@ -156,7 +156,10 @@ consensus::consensus(
         maybe_step_down();
         dispatch_vote(false);
     });
-    ssx::spawn_with_gate(_bg, [this] { return background_flusher(); });
+    _background_flusher.set_callback([this]() {
+        ssx::spawn_with_gate(
+          _bg, [this]() { return do_background_flush_log().discard_result(); });
+    });
 }
 
 void consensus::setup_metrics() {
@@ -281,7 +284,7 @@ ss::future<> consensus::stop() {
     co_await _batcher.stop();
 
     _op_lock.broken();
-    _background_flusher.broken();
+    _background_flusher.cancel();
     co_await _bg.close();
 
     // close writer if we have to
@@ -2645,6 +2648,7 @@ append_entries_reply consensus::make_append_entries_reply(
 }
 
 ss::future<consensus::flushed> consensus::flush_log() {
+    _background_flusher.cancel();
     if (!has_pending_flushes()) {
         _last_flush_time = clock_type::now();
         co_return flushed::no;
@@ -2686,6 +2690,28 @@ ss::future<consensus::flushed> consensus::flush_log() {
       lstats,
       _log);
     co_return flushed::yes;
+}
+
+void consensus::background_flush_log() {
+    _background_flush_pending = true;
+    _background_flusher.cancel();
+    ssx::spawn_with_gate(
+      _bg, [this]() { return do_background_flush_log().discard_result(); });
+}
+
+void consensus::maybe_schedule_flush() {
+    if (
+      !has_pending_flushes() || _background_flush_pending
+      || _follower_recovery_state) {
+        return;
+    }
+    if (_pending_flush_bytes >= _max_pending_flush_bytes) {
+        background_flush_log();
+        return;
+    }
+    if (!_background_flusher.armed()) {
+        _background_flusher.arm(flush_ms());
+    }
 }
 
 ss::future<storage::append_result> consensus::disk_append(
@@ -2736,7 +2762,7 @@ ss::future<storage::append_result> consensus::disk_append(
               // Here are are appending entries without a flush, signal the
               // flusher incase we hit the thresholds, particularly unflushed
               // bytes.
-              _background_flusher.signal();
+              maybe_schedule_flush();
           }
           // TODO
           // if we rolled a log segment. write current configuration
@@ -3903,19 +3929,15 @@ void consensus::upsert_recovery_state(
     }
 }
 
-ss::future<> consensus::maybe_flush_log() {
+ss::future<> consensus::do_background_flush_log() {
     // if there is nothing to do exit without grabbing an op_lock, this check is
     // sloppy as we data can be in flight but it is ok since next check will
     // detect it and flush log.
-    if (
-      _pending_flush_bytes < _max_pending_flush_bytes
-      && time_since_last_flush() < flush_ms()) {
-        co_return;
-    }
     try {
         auto holder = _bg.hold();
         auto u = co_await _op_lock.get_units();
         auto flushed = co_await flush_log();
+        _background_flush_pending = false;
         if (flushed && is_leader()) {
             for (auto& [id, idx] : _fstats) {
                 // force full heartbeat to move the committed index forward
@@ -3976,26 +3998,8 @@ void consensus::notify_config_update() {
     // let the flusher know that the tunables have changed, this may result
     // in an extra flush but that should be ok since this this is a rare
     // operation.
-    _background_flusher.signal();
-}
-
-ss::future<> consensus::background_flusher() {
-    while (!_bg.is_closed()) {
-        try {
-            co_await std::visit(
-              [&](auto&& flush_delay) {
-                  return _background_flusher.wait(flush_delay);
-              },
-              _max_flush_delay);
-        } catch (const ss::condition_variable_timed_out&) {
-        }
-        co_await maybe_flush_log().handle_exception(
-          [this](const std::exception_ptr& ex) {
-              vlog(
-                _ctxlog.warn,
-                "Ignoring exception from background flush: {}",
-                ex);
-          });
+    if (_background_flusher.armed()) {
+        _background_flusher.rearm(ss::lowres_clock::now() + flush_ms());
     }
 }
 
