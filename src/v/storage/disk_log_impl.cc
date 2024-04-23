@@ -701,7 +701,12 @@ ss::future<bool> disk_log_impl::sliding_window_compact(
 
         auto cmp_idx_name = seg->path().to_compacted_index();
         auto compacted_idx_writer = make_file_backed_compacted_index(
-          cmp_idx_tmpname, cfg.iopc, true, resources(), cfg.sanitizer_config);
+          cmp_idx_tmpname,
+          cfg.iopc,
+          true,
+          _stm_manager,
+          resources(),
+          cfg.sanitizer_config);
 
         vlog(
           gclog.debug,
@@ -925,7 +930,12 @@ ss::future<compaction_result> disk_log_impl::compact_adjacent_segments(
       cfg.files_to_cleanup, {staging_path, staging_path.to_compacted_index()}};
     auto [replacement, generations]
       = co_await storage::internal::make_concatenated_segment(
-        staging_path, segments, cfg, _manager.resources(), _feature_table);
+        staging_path,
+        segments,
+        cfg,
+        _stm_manager,
+        _manager.resources(),
+        _feature_table);
 
     // compact the combined data in the replacement segment. the partition size
     // tracking needs to be adjusted as compaction routines assume the segment
@@ -1548,7 +1558,8 @@ ss::future<> disk_log_impl::new_segment(
         t,
         pc,
         config::shard_local_cfg().storage_read_buffer_size(),
-        config::shard_local_cfg().storage_read_readahead_count())
+        config::shard_local_cfg().storage_read_readahead_count(),
+        _stm_manager)
       .then([this](ss::lw_shared_ptr<segment> handles) mutable {
           return remove_empty_segments().then(
             [this, h = std::move(handles)]() mutable {

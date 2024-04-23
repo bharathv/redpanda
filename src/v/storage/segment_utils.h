@@ -73,6 +73,7 @@ make_concatenated_segment(
   segment_full_path,
   std::vector<ss::lw_shared_ptr<segment>>,
   compaction_config,
+  ss::lw_shared_ptr<stm_manager> stm_manager,
   storage_resources& resources,
   ss::sharded<features::feature_table>& feature_table);
 
@@ -80,6 +81,7 @@ ss::future<> write_concatenated_compacted_index(
   std::filesystem::path,
   std::vector<ss::lw_shared_ptr<segment>>,
   compaction_config,
+  ss::lw_shared_ptr<stm_manager> stm_manager,
   storage_resources& resources);
 
 ss::future<std::vector<ss::rwlock::holder>> transfer_segment(
@@ -119,6 +121,7 @@ ss::future<ss::file> make_handle(
 ss::future<compacted_index_writer> make_compacted_index_writer(
   const std::filesystem::path& path,
   ss::io_priority_class iopc,
+  ss::lw_shared_ptr<stm_manager> stm_manager,
   storage_resources& resources,
   std::optional<ntp_sanitizer_config> ntp_sanitizer_config);
 

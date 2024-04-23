@@ -452,6 +452,7 @@ ss::future<ss::lw_shared_ptr<segment>> log_manager::make_log_segment(
   ss::io_priority_class pc,
   size_t read_buf_size,
   unsigned read_ahead,
+  ss::lw_shared_ptr<stm_manager> stm_manager,
   record_version_type version) {
     auto gate_holder = _gate.hold();
 
@@ -466,6 +467,7 @@ ss::future<ss::lw_shared_ptr<segment>> log_manager::make_log_segment(
       read_buf_size,
       read_ahead,
       create_cache(ntp.cache_enabled()),
+      stm_manager,
       _resources,
       _feature_table,
       std::move(ntp_sanitizer_cfg));

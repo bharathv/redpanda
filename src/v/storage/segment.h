@@ -384,6 +384,7 @@ ss::future<ss::lw_shared_ptr<segment>> make_segment(
   size_t buf_size,
   unsigned read_ahead,
   std::optional<batch_cache_index> batch_cache,
+  ss::lw_shared_ptr<stm_manager> stm_manager,
   storage_resources&,
   ss::sharded<features::feature_table>& feature_table,
   std::optional<ntp_sanitizer_config> ntp_sanitizer_config);

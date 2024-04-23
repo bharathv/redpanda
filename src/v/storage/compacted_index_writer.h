@@ -141,6 +141,7 @@ compacted_index_writer make_file_backed_compacted_index(
   ss::sstring filename,
   ss::io_priority_class p,
   bool truncate,
+  ss::lw_shared_ptr<stm_manager> stm_mgr,
   storage_resources& resources,
   std::optional<ntp_sanitizer_config> sanitizer_config);
 

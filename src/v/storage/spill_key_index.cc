@@ -39,10 +39,12 @@ spill_key_index::spill_key_index(
   ss::sstring name,
   ss::io_priority_class p,
   bool truncate,
+  ss::lw_shared_ptr<stm_manager> stm_mgr,
   storage_resources& resources,
   std::optional<ntp_sanitizer_config> sanitizer_config)
   : compacted_index_writer::impl(std::move(name))
   , _sanitizer_config(std::move(sanitizer_config))
+  , _stm_mgr(stm_mgr)
   , _resources(resources)
   , _pc(p)
   , _truncate(truncate) {}
@@ -55,8 +57,10 @@ spill_key_index::spill_key_index(
   ss::sstring name,
   ss::file dummy_file,
   size_t max_mem,
+  ss::lw_shared_ptr<stm_manager> stm_mgr,
   storage_resources& resources)
   : compacted_index_writer::impl(std::move(name))
+  , _stm_mgr(stm_mgr)
   , _resources(resources)
   , _pc(ss::default_priority_class())
   , _appender(storage::segment_appender(
@@ -376,9 +380,15 @@ compacted_index_writer make_file_backed_compacted_index(
   ss::sstring name,
   ss::io_priority_class p,
   bool truncate,
+  ss::lw_shared_ptr<stm_manager> stm_mgr,
   storage_resources& resources,
   std::optional<ntp_sanitizer_config> sanitizer_config) {
     return compacted_index_writer(std::make_unique<internal::spill_key_index>(
-      std::move(name), p, truncate, resources, std::move(sanitizer_config)));
+      std::move(name),
+      p,
+      truncate,
+      stm_mgr,
+      resources,
+      std::move(sanitizer_config)));
 }
 } // namespace storage

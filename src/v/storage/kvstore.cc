@@ -281,6 +281,7 @@ ss::future<> kvstore::roll() {
                  config::shard_local_cfg().storage_read_buffer_size(),
                  config::shard_local_cfg().storage_read_readahead_count(),
                  std::nullopt,
+                 nullptr,
                  _resources,
                  _feature_table,
                  _ntp_sanitizer_config)
@@ -324,6 +325,7 @@ ss::future<> kvstore::roll() {
                        config::shard_local_cfg().storage_read_buffer_size(),
                        config::shard_local_cfg().storage_read_readahead_count(),
                        std::nullopt,
+                       nullptr,
                        _resources,
                        _feature_table,
                        _ntp_sanitizer_config)

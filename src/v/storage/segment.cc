@@ -791,6 +791,7 @@ ss::future<ss::lw_shared_ptr<segment>> make_segment(
   size_t buf_size,
   unsigned read_ahead,
   std::optional<batch_cache_index> batch_cache,
+  ss::lw_shared_ptr<stm_manager> stm_manager,
   storage_resources& resources,
   ss::sharded<features::feature_table>& feature_table,
   std::optional<ntp_sanitizer_config> ntp_sanitizer_config) {
@@ -832,19 +833,20 @@ ss::future<ss::lw_shared_ptr<segment>> make_segment(
                   });
             });
       })
-      .then([path, &ntpc, pc, &resources, ntp_sanitizer_config](
+      .then([path, &ntpc, pc, &resources, ntp_sanitizer_config, stm_manager](
               ss::lw_shared_ptr<segment> seg) mutable {
           if (!ntpc.is_compacted()) {
               return ss::make_ready_future<ss::lw_shared_ptr<segment>>(seg);
           }
           return with_segment(
             seg,
-            [path, pc, &resources, ntp_sanitizer_config](
+            [path, pc, &resources, ntp_sanitizer_config, stm_manager](
               const ss::lw_shared_ptr<segment>& seg) mutable {
                 auto compacted_path = path.to_compacted_index();
                 return internal::make_compacted_index_writer(
                          compacted_path,
                          pc,
+                         stm_manager,
                          resources,
                          std::move(ntp_sanitizer_config))
                   .then([seg, &resources](compacted_index_writer compact) {

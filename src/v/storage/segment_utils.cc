@@ -151,6 +151,7 @@ ss::future<ss::file> make_reader_handle(
 ss::future<compacted_index_writer> make_compacted_index_writer(
   const std::filesystem::path& path,
   ss::io_priority_class iopc,
+  ss::lw_shared_ptr<stm_manager> stm_manager,
   storage_resources& resources,
   std::optional<ntp_sanitizer_config> ntp_sanitizer_config) {
     return ss::make_ready_future<compacted_index_writer>(
@@ -158,6 +159,7 @@ ss::future<compacted_index_writer> make_compacted_index_writer(
         path.string(),
         iopc,
         false,
+        stm_manager,
         resources,
         std::move(ntp_sanitizer_config)));
 }
@@ -274,6 +276,7 @@ ss::future<> copy_filtered_entries(
 static ss::future<> do_write_clean_compacted_index(
   compacted_index_reader reader,
   compaction_config cfg,
+  ss::lw_shared_ptr<stm_manager> stm_manager,
   storage_resources& resources) {
     const auto tmpname = std::filesystem::path(
       fmt::format("{}.staging", reader.path()));
@@ -281,7 +284,12 @@ static ss::future<> do_write_clean_compacted_index(
     auto staging_to_clean = scoped_file_tracker{
       cfg.files_to_cleanup, {tmpname}};
     auto truncating_writer = make_file_backed_compacted_index(
-      tmpname.string(), cfg.iopc, true, resources, cfg.sanitizer_config);
+      tmpname.string(),
+      cfg.iopc,
+      true,
+      stm_manager,
+      resources,
+      cfg.sanitizer_config);
     co_await copy_filtered_entries(
       reader, std::move(bitmap), std::move(truncating_writer));
     co_await ss::rename_file(std::string(tmpname), ss::sstring(reader.path()));
@@ -291,9 +299,10 @@ static ss::future<> do_write_clean_compacted_index(
 ss::future<> write_clean_compacted_index(
   compacted_index_reader reader,
   compaction_config cfg,
+  ss::lw_shared_ptr<stm_manager> stm_manager,
   storage_resources& resources) {
     // integrity verified in `do_detect_compaction_index_state`
-    return do_write_clean_compacted_index(reader, cfg, resources)
+    return do_write_clean_compacted_index(reader, cfg, stm_manager, resources)
       .finally([reader]() mutable {
           return reader.close().then_wrapped(
             [reader](ss::future<>) { /*ignore*/ });
@@ -357,14 +366,16 @@ generate_compacted_list(model::offset o, compacted_index_reader reader) {
 ss::future<> do_compact_segment_index(
   ss::lw_shared_ptr<segment> s,
   compaction_config cfg,
+  ss::lw_shared_ptr<stm_manager> stm_manager,
   storage_resources& resources) {
     auto compacted_path = s->reader().path().to_compacted_index();
     vlog(gclog.trace, "compacting segment compaction index:{}", compacted_path);
     return make_reader_handle(compacted_path, cfg.sanitizer_config)
-      .then([cfg, compacted_path, s, &resources](ss::file f) {
+      .then([cfg, compacted_path, s, stm_manager, &resources](ss::file f) {
           auto reader = make_file_backed_compacted_reader(
             compacted_path, std::move(f), cfg.iopc, 64_KiB);
-          return write_clean_compacted_index(reader, cfg, resources);
+          return write_clean_compacted_index(
+            reader, cfg, stm_manager, resources);
       });
 }
 
@@ -507,6 +518,7 @@ ss::future<std::optional<size_t>> do_self_compact_segment(
   compaction_config cfg,
   storage::probe& pb,
   storage::readers_cache& readers_cache,
+  ss::lw_shared_ptr<stm_manager> stm_manager,
   storage_resources& resources,
   offset_delta_time apply_offset,
   ss::rwlock::holder read_holder,
@@ -520,7 +532,7 @@ ss::future<std::optional<size_t>> do_self_compact_segment(
 
     // broker_timestamp is used for retention.ms, but it's only in the index,
     // not it in the segment itself. save it to restore it later
-    co_await do_compact_segment_index(s, cfg, resources);
+    co_await do_compact_segment_index(s, cfg, stm_manager, resources);
     // copy the bytes after segment is good - note that we
     // need to do it with the READ-lock, not the write lock
     auto staging_file = s->reader().path().to_staging();
@@ -574,7 +586,7 @@ ss::future<> build_compaction_index(
   compaction_config cfg,
   storage_resources& resources) {
     auto w = co_await make_compacted_index_writer(
-      p, cfg.iopc, resources, cfg.sanitizer_config);
+      p, cfg.iopc, stm_manager, resources, cfg.sanitizer_config);
     auto reducer = tx_reducer(stm_manager, std::move(aborted_txs), &w);
     auto index_builder = co_await ss::coroutine::as_future<tx_reducer::stats>(
       std::move(rdr)
@@ -705,6 +717,7 @@ ss::future<compaction_result> self_compact_segment(
       cfg,
       pb,
       readers_cache,
+      stm_manager,
       resources,
       apply_offset,
       std::move(read_holder),
@@ -725,6 +738,7 @@ make_concatenated_segment(
   segment_full_path path,
   std::vector<ss::lw_shared_ptr<segment>> segments,
   compaction_config cfg,
+  ss::lw_shared_ptr<stm_manager> stm_manager,
   storage_resources& resources,
   ss::sharded<features::feature_table>& feature_table) {
     // read locks on source segments
@@ -751,7 +765,7 @@ make_concatenated_segment(
         co_await ss::remove_file(ss::sstring(compacted_idx_path));
     }
     co_await write_concatenated_compacted_index(
-      compacted_idx_path, segments, cfg, resources);
+      compacted_idx_path, segments, cfg, stm_manager, resources);
 
     // concatenation process
     if (co_await ss::file_exists(path.string())) {
@@ -881,62 +895,70 @@ ss::future<> do_write_concatenated_compacted_index(
   std::filesystem::path target_path,
   std::vector<ss::lw_shared_ptr<segment>>& segments,
   compaction_config cfg,
+  ss::lw_shared_ptr<stm_manager> stm_manager,
   storage_resources& resources) {
     return make_indices_readers(segments, cfg.iopc, cfg.sanitizer_config)
-      .then([cfg, target_path = std::move(target_path), &resources](
-              std::vector<compacted_index_reader> readers) mutable {
-          vlog(gclog.debug, "concatenating {} indicies", readers.size());
-          return ss::do_with(
-            std::move(readers),
-            [cfg, target_path = std::move(target_path), &resources](
-              std::vector<compacted_index_reader>& readers) mutable {
-                return ss::parallel_for_each(
-                         readers.begin(),
-                         readers.end(),
-                         [](compacted_index_reader& reader) {
-                             return reader.verify_integrity();
-                         })
-                  .then([] { return true; })
-                  .handle_exception([](const std::exception_ptr& e) {
-                      vlog(
-                        gclog.info,
-                        "compacted index is corrupted, skipping "
-                        "concatenation "
-                        "- {}",
-                        e);
-                      return false;
-                  })
-                  .then([cfg,
-                         target_path = std::move(target_path),
-                         &readers,
-                         &resources](bool verified_successfully) {
-                      if (!verified_successfully) {
-                          return ss::now();
-                      }
+      .then(
+        [cfg, target_path = std::move(target_path), &resources, stm_manager](
+          std::vector<compacted_index_reader> readers) mutable {
+            vlog(gclog.debug, "concatenating {} indicies", readers.size());
+            return ss::do_with(
+              std::move(readers),
+              [cfg,
+               target_path = std::move(target_path),
+               &resources,
+               stm_manager](
+                std::vector<compacted_index_reader>& readers) mutable {
+                  return ss::parallel_for_each(
+                           readers.begin(),
+                           readers.end(),
+                           [](compacted_index_reader& reader) {
+                               return reader.verify_integrity();
+                           })
+                    .then([] { return true; })
+                    .handle_exception([](const std::exception_ptr& e) {
+                        vlog(
+                          gclog.info,
+                          "compacted index is corrupted, skipping "
+                          "concatenation "
+                          "- {}",
+                          e);
+                        return false;
+                    })
+                    .then([cfg,
+                           target_path = std::move(target_path),
+                           &readers,
+                           &resources,
+                           stm_manager](bool verified_successfully) {
+                        if (!verified_successfully) {
+                            return ss::now();
+                        }
 
-                      return make_compacted_index_writer(
-                               target_path,
-                               cfg.iopc,
-                               resources,
-                               cfg.sanitizer_config)
-                        .then([&readers](compacted_index_writer writer) {
-                            return rewrite_concatenated_indicies(
-                              std::move(writer), readers);
-                        });
-                  })
-                  .finally([&readers] {
-                      return ss::parallel_for_each(
-                        readers,
-                        [](compacted_index_reader& r) { return r.close(); });
-                  });
-            });
-      });
+                        return make_compacted_index_writer(
+                                 target_path,
+                                 cfg.iopc,
+                                 stm_manager,
+                                 resources,
+                                 cfg.sanitizer_config)
+                          .then([&readers](compacted_index_writer writer) {
+                              return rewrite_concatenated_indicies(
+                                std::move(writer), readers);
+                          });
+                    })
+                    .finally([&readers] {
+                        return ss::parallel_for_each(
+                          readers,
+                          [](compacted_index_reader& r) { return r.close(); });
+                    });
+              });
+        });
 }
 
 ss::future<> write_concatenated_compacted_index(
   std::filesystem::path target_path,
   std::vector<ss::lw_shared_ptr<segment>> segments,
   compaction_config cfg,
+  ss::lw_shared_ptr<stm_manager> stm_manager,
   storage_resources& resources) {
     if (segments.empty()) {
         return ss::now();
@@ -945,10 +967,10 @@ ss::future<> write_concatenated_compacted_index(
     readers.reserve(segments.size());
     return ss::do_with(
       std::move(segments),
-      [cfg, target_path = std::move(target_path), &resources](
+      [cfg, target_path = std::move(target_path), &resources, stm_manager](
         std::vector<ss::lw_shared_ptr<segment>>& segments) mutable {
           return do_write_concatenated_compacted_index(
-            std::move(target_path), segments, cfg, resources);
+            std::move(target_path), segments, cfg, stm_manager, resources);
       });
 }
 

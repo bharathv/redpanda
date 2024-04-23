@@ -49,6 +49,7 @@ public:
       ss::sstring filename,
       ss::io_priority_class,
       bool truncate,
+      ss::lw_shared_ptr<stm_manager>,
       storage_resources&,
       std::optional<ntp_sanitizer_config> sanitizer_config);
 
@@ -56,6 +57,7 @@ public:
       ss::sstring name,
       ss::file dummy_file,
       size_t max_mem,
+      ss::lw_shared_ptr<stm_manager>,
       storage_resources&);
 
     spill_key_index(const spill_key_index&) = delete;
@@ -118,6 +120,7 @@ private:
     ss::future<> spill(compacted_index::entry_type, bytes_view, value_type);
 
     std::optional<ntp_sanitizer_config> _sanitizer_config;
+    ss::lw_shared_ptr<stm_manager> _stm_mgr;
     storage_resources& _resources;
     ss::io_priority_class _pc;
     bool _truncate;
