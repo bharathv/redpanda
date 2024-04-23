@@ -283,17 +283,7 @@ ss::future<ss::stop_iteration> copy_data_segment_reducer::filter_and_append(
     }
     bool compactible_batch = is_compactible(to_copy.value());
     if (_compacted_idx && compactible_batch) {
-        co_await model::for_each_record(
-          to_copy.value(),
-          [&batch = to_copy.value(), this](const model::record& r) {
-              auto& hdr = batch.header();
-              return _compacted_idx->index(
-                hdr.type,
-                hdr.attrs.is_control(),
-                r.key(),
-                batch.base_offset(),
-                r.offset_delta());
-          });
+        co_await _compacted_idx->index(to_copy.value());
     }
     auto batch = co_await compress_batch(original, std::move(to_copy.value()));
     auto const start_pos = _appender->file_byte_offset();
@@ -355,16 +345,8 @@ index_rebuilder_reducer::operator()(model::record_batch&& b) {
 }
 
 ss::future<> index_rebuilder_reducer::do_index(model::record_batch&& b) {
-    return ss::do_with(std::move(b), [this](model::record_batch& b) {
-        return model::for_each_record(
-          b,
-          [this,
-           bt = b.header().type,
-           ctrl = b.header().attrs.is_control(),
-           o = b.base_offset()](model::record& r) {
-              return _w->index(bt, ctrl, r.key(), o, r.offset_delta());
-          });
-    });
+    return ss::do_with(
+      std::move(b), [this](model::record_batch& b) { return _w->index(b); });
 }
 
 void tx_reducer::consume_aborted_txs(model::offset upto) {

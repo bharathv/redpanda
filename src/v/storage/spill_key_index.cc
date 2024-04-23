@@ -151,7 +151,7 @@ ss::future<> spill_key_index::add_key(compaction_key b, value_type v) {
     });
 }
 
-ss::future<> spill_key_index::index(
+ss::future<> spill_key_index::do_index_record(
   model::record_batch_type batch_type,
   bool is_control_batch,
   bytes&& b,
@@ -183,18 +183,16 @@ ss::future<> spill_key_index::index(
           return add_key(std::move(key), value_type{base_offset, delta});
       });
 }
-ss::future<> spill_key_index::index(
-  model::record_batch_type batch_type,
-  bool is_control_batch,
-  const iobuf& key,
-  model::offset base_offset,
-  int32_t delta) {
-    return index(
-      batch_type,
-      is_control_batch,
-      iobuf_to_bytes(key), // makes a copy, but we need deterministic keys
-      base_offset,
-      delta);
+ss::future<> spill_key_index::index(const model::record_batch& batch) {
+    return model::for_each_record(
+      batch, [this, &batch](const model::record& r) {
+          return do_index_record(
+            batch.header().type,
+            batch.header().attrs.is_control(),
+            iobuf_to_bytes(r.key()),
+            batch.base_offset(),
+            r.offset_delta());
+      });
 }
 
 /// format is:

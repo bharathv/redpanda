@@ -65,19 +65,8 @@ public:
     ~spill_key_index() override;
 
     // public
-    ss::future<> index(
-      model::record_batch_type,
-      bool is_control_batch,
-      const iobuf& key,
-      model::offset,
-      int32_t) final;
+    ss::future<> index(const model::record_batch&) final;
     ss::future<> index(const compaction_key& b, model::offset, int32_t) final;
-    ss::future<> index(
-      model::record_batch_type,
-      bool is_control_batch,
-      bytes&&,
-      model::offset,
-      int32_t) final;
     ss::future<> truncate(model::offset) final;
     ss::future<> append(compacted_index::entry) final;
     ss::future<> close() final;
@@ -114,6 +103,13 @@ private:
         auto release_units = std::min(entry_memory, _mem_units.count());
         _mem_units.return_units(release_units);
     }
+
+    ss::future<> do_index_record(
+      model::record_batch_type batch_type,
+      bool is_control_batch,
+      bytes&& b,
+      model::offset base_offset,
+      int32_t delta);
 
     ss::future<> maybe_open();
     ss::future<> open();

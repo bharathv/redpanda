@@ -64,21 +64,7 @@ public:
           int32_t offset_delta)
           = 0;
 
-        virtual ss::future<> index(
-          model::record_batch_type,
-          bool is_control_batch,
-          const iobuf& key, // default format in record batch
-          model::offset base_offset,
-          int32_t offset_delta)
-          = 0;
-
-        virtual ss::future<> index(
-          model::record_batch_type,
-          bool is_control_batch,
-          bytes&& key, // default format in record batch
-          model::offset base_offset,
-          int32_t offset_delta)
-          = 0;
+        virtual ss::future<> index(const model::record_batch&) = 0;
 
         virtual ss::future<> append(compacted_index::entry) = 0;
 
@@ -102,18 +88,7 @@ public:
     // accepts a compaction_key which is already prefixed with batch_type
     ss::future<> index(const compaction_key& b, model::offset, int32_t);
 
-    ss::future<> index(
-      model::record_batch_type,
-      bool is_control_batch,
-      const iobuf& key,
-      model::offset,
-      int32_t);
-    ss::future<> index(
-      model::record_batch_type,
-      bool is_control_batch,
-      bytes&&,
-      model::offset,
-      int32_t);
+    ss::future<> index(const model::record_batch&);
 
     ss::future<> append(compacted_index::entry);
 
@@ -145,27 +120,15 @@ inline std::unique_ptr<compacted_index_writer::impl>
 compacted_index_writer::release() && {
     return std::move(_impl);
 }
-inline ss::future<> compacted_index_writer::index(
-  model::record_batch_type batch_type,
-  bool is_control_batch,
-  const iobuf& b,
-  model::offset base_offset,
-  int32_t delta) {
-    return _impl->index(batch_type, is_control_batch, b, base_offset, delta);
+inline ss::future<>
+compacted_index_writer::index(const model::record_batch& batch) {
+    return _impl->index(batch);
 }
 inline ss::future<> compacted_index_writer::index(
   const compaction_key& b, model::offset base_offset, int32_t delta) {
     return _impl->index(b, base_offset, delta);
 }
-inline ss::future<> compacted_index_writer::index(
-  model::record_batch_type batch_type,
-  bool is_control_batch,
-  bytes&& b,
-  model::offset base_offset,
-  int32_t delta) {
-    return _impl->index(
-      batch_type, is_control_batch, std::move(b), base_offset, delta);
-}
+
 inline ss::future<> compacted_index_writer::truncate(model::offset o) {
     return _impl->truncate(o);
 }
