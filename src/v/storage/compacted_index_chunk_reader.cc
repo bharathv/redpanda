@@ -52,11 +52,12 @@ ss::future<> compacted_index_chunk_reader::verify_integrity() {
         options.buffer_size = 4096;
         options.io_priority_class = _iopc;
         options.read_ahead = 1;
+        auto bytes_to_read = _data_size.value() + _footer.value().tx_size;
         return ss::do_with(
                  int64_t(_footer->size),
                  crc::crc32c{},
                  ss::make_file_input_stream(
-                   _handle, 0, _data_size.value(), std::move(options)),
+                   _handle, 0, bytes_to_read, std::move(options)),
                  [](
                    int64_t& max_bytes,
                    crc::crc32c& crc,
@@ -99,6 +100,42 @@ ss::future<> compacted_index_chunk_reader::verify_integrity() {
 
 bool compacted_index_chunk_reader::is_footer_loaded() const {
     return bool(_footer);
+}
+
+ss::future<> compacted_index_chunk_reader::load_transaction_metadata() {
+    vassert(
+      is_footer_loaded(), "ensure footer is loaded before loading tx metadata");
+    auto tx_size = _footer->tx_size;
+    if (tx_size <= 0) {
+        co_return;
+    }
+
+    auto stat = co_await _handle.stat();
+    size_t file_size = stat.st_size;
+
+    size_t footer_buf_size = std::min(
+      file_size, compacted_index::footer::footer_size);
+
+    ss::file_input_stream_options options;
+    options.buffer_size = 4096;
+    options.io_priority_class = _iopc;
+    options.read_ahead = 0;
+    auto in = ss::make_file_input_stream(
+      _handle,
+      file_size - footer_buf_size - tx_size,
+      tx_size,
+      std::move(options));
+    iobuf buf = co_await read_iobuf_exactly(in, tx_size);
+
+    if (buf.size_bytes() != tx_size) {
+        throw std::runtime_error(fmt::format(
+          "could not read enough bytes to parse footer. read:{}, expected:{}",
+          buf.size_bytes(),
+          footer_buf_size));
+    }
+    iobuf_parser parser{std::move(buf)};
+    _tx_tracker = co_await serde::read_async<transaction_tracker>(parser);
+    vlog(stlog.debug, "Loaded tx metadata: {}", _tx_tracker);
 }
 
 ss::future<compacted_index::footer>
@@ -163,8 +200,8 @@ compacted_index_chunk_reader::load_footer() {
         iobuf_parser parser(std::move(buf));
         footer = reflection::adl<storage::compacted_index::footer>{}.from(
           parser);
-
-        data_size = file_size - compacted_index::footer::footer_size;
+        data_size = file_size - footer.tx_size
+                    - compacted_index::footer::footer_size;
     } else {
         throw compacted_index::needs_rebuild_error{
           fmt::format("incompatible index version: {}", footer_v1.version)};
@@ -172,6 +209,7 @@ compacted_index_chunk_reader::load_footer() {
 
     _footer = footer;
     _data_size = data_size;
+    co_await load_transaction_metadata();
     co_return _footer.value();
 }
 

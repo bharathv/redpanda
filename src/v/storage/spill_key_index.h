@@ -30,6 +30,7 @@
 #include <absl/hash/hash.h>
 namespace storage::internal {
 using namespace storage; // NOLINT
+
 class spill_key_index final : public compacted_index_writer::impl {
 public:
     struct value_type {
@@ -119,6 +120,8 @@ private:
     ss::future<> add_key(compaction_key, value_type);
     ss::future<> spill(compacted_index::entry_type, bytes_view, value_type);
 
+    ss::future<> flush_transaction_metadata();
+
     std::optional<ntp_sanitizer_config> _sanitizer_config;
     ss::lw_shared_ptr<stm_manager> _stm_mgr;
     storage_resources& _resources;
@@ -126,6 +129,7 @@ private:
     bool _truncate;
     std::optional<segment_appender> _appender;
     underlying_t _midx;
+    transaction_tracker _tx_tracker;
 
     // Max memory we'll use for _midx, although we may spill earlier
     // if hinted to by storage_resources

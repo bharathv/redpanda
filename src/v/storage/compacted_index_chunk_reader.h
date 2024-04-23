@@ -48,6 +48,8 @@ public:
 private:
     bool is_footer_loaded() const;
 
+    ss::future<> load_transaction_metadata();
+
     ss::file _handle;
     ss::io_priority_class _iopc;
     size_t _max_chunk_memory{0};
@@ -57,6 +59,8 @@ private:
     std::optional<compacted_index::footer> _footer;
     bool _end_of_stream{false};
     std::optional<ss::input_stream<char>> _cursor;
+
+    std::optional<transaction_tracker> _tx_tracker;
 
     friend std::ostream&
     operator<<(std::ostream&, const compacted_index_chunk_reader&);

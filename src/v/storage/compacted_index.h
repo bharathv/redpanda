@@ -11,8 +11,12 @@
 
 #pragma once
 #include "bytes/bytes.h"
+#include "container/fragmented_vector.h"
 #include "model/fundamental.h"
+#include "model/record.h"
 #include "model/record_batch_types.h"
+
+#include <absl/container/node_hash_map.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -21,6 +25,7 @@
 namespace storage {
 // simple types shared among readers and writers
 
+class stm_manager;
 /**
  * Type representing a record key prefixed with batch_type
  */
@@ -74,8 +79,9 @@ struct compacted_index {
         // 2 - 64-bit size and keys fields
         // 3 - add control bit to the key prefix so control batches cannot
         // compact
+        // 4 - add transaction metadata to the footer
         //  data batches with same key
-        static constexpr int8_t current_version = 3;
+        static constexpr int8_t current_version = 4;
 
         uint64_t size{0};
         uint64_t keys{0};
@@ -83,6 +89,7 @@ struct compacted_index {
         // (that allows using an index with a version greater than current).
         uint32_t size_deprecated{0};
         uint32_t keys_deprecated{0};
+        size_t tx_size{0}; // size of transactions metadata
         footer_flags flags{0};
         uint32_t crc{0}; // crc32
         // version *must* be the last field
@@ -92,11 +99,13 @@ struct compacted_index {
                                               + sizeof(size_deprecated)
                                               + sizeof(keys_deprecated)
                                               + sizeof(flags) + sizeof(crc)
+                                              + sizeof(tx_size)
                                               + sizeof(version);
 
         friend std::ostream&
         operator<<(std::ostream& o, const compacted_index::footer& f) {
             return o << "{size:" << f.size << ", keys:" << f.keys
+                     << ", tx size: " << f.tx_size
                      << ", flags:" << (uint32_t)f.flags << ", crc:" << f.crc
                      << ", version: " << (int)f.version << "}";
         }
@@ -187,5 +196,31 @@ operator&(compacted_index::footer_flags a, compacted_index::footer_flags b) {
 operator&=(compacted_index::footer_flags& a, compacted_index::footer_flags b) {
     a = (a & b);
 }
+
+struct tx_range
+  : public serde::
+      checksum_envelope<tx_range, serde::version<0>, serde::compat_version<0>> {
+    model::producer_identity pid;
+    model::offset first;
+    model::offset last;
+
+    auto serde_fields() { return std::tie(pid, first, last); }
+};
+struct transaction_tracker
+  : public serde::checksum_envelope<
+      transaction_tracker,
+      serde::version<0>,
+      serde::compat_version<0>> {
+    void index(ss::lw_shared_ptr<stm_manager> stm, const model::record_batch&);
+
+    absl::node_hash_map<model::producer_identity, model::offset>
+      open_transactions;
+    chunked_vector<tx_range> aborted_transactions;
+
+    ss::future<> serde_async_write(iobuf&);
+    ss::future<> serde_async_read(iobuf_parser&, serde::header const);
+
+    friend std::ostream& operator<<(std::ostream&, const transaction_tracker&);
+};
 
 } // namespace storage

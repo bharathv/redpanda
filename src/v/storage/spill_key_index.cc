@@ -188,6 +188,7 @@ ss::future<> spill_key_index::do_index_record(
       });
 }
 ss::future<> spill_key_index::index(const model::record_batch& batch) {
+    _tx_tracker.index(_stm_mgr, batch);
     return model::for_each_record(
       batch, [this, &batch](const model::record& r) {
           return do_index_record(
@@ -272,6 +273,21 @@ ss::future<> spill_key_index::drain_all_keys() {
       });
 }
 
+ss::future<> spill_key_index::flush_transaction_metadata() {
+    iobuf out;
+    co_await serde::write_async(out, std::move(_tx_tracker));
+    for (const auto& frag : out) {
+        _crc.extend(reinterpret_cast<const uint8_t*>(frag.get()), frag.size());
+    }
+    co_await _appender->append(out);
+    _footer.tx_size = out.size_bytes();
+    vlog(
+      stlog.info,
+      "Flushing tx metadata: {}, size: {}",
+      _tx_tracker,
+      _footer.tx_size);
+}
+
 void spill_key_index::set_flag(compacted_index::footer_flags f) {
     _footer.flags |= f;
 }
@@ -322,6 +338,8 @@ ss::future<> spill_key_index::close() {
         co_await maybe_open();
 
         co_await drain_all_keys();
+
+        co_await flush_transaction_metadata();
 
         vassert(
           _keys_mem_usage == 0,
