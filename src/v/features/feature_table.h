@@ -99,6 +99,7 @@ inline const std::unordered_set<std::string_view> retired_features = {
   "mtls_authentication",
   "rm_stm_kafka_cache",
   "transaction_ga",
+  "idempotency_v2",
 };
 
 /**
