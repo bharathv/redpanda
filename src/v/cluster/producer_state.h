@@ -30,18 +30,12 @@ using namespace std::chrono_literals;
 // Befriended to expose internal state in tests.
 struct test_fixture;
 
-namespace cluster {
+namespace cluster::tx {
 
 template<class Func>
 concept AcceptsUnits = requires(Func f, ssx::semaphore_units units) {
     f(std::move(units));
 };
-
-class producer_state;
-namespace tx {
-struct producer_state_snapshot;
-}
-class request;
 
 using producer_ptr = ss::lw_shared_ptr<producer_state>;
 using result_promise_t = ss::shared_promise<result<kafka_result>>;
@@ -236,4 +230,4 @@ private:
     friend struct ::test_fixture;
 };
 
-} // namespace cluster
+} // namespace cluster::tx
