@@ -10,6 +10,7 @@
 #pragma once
 
 #include "cluster/types.h"
+#include "kafka/protocol/wire.h"
 #include "reflection/async_adl.h"
 
 namespace cluster::tx {
@@ -65,6 +66,19 @@ struct tx_data {
     model::tx_seq tx_seq;
     model::partition_id tm_partition;
 };
+
+model::record_batch make_fence_batch(
+  model::producer_identity,
+  model::tx_seq,
+  std::chrono::milliseconds,
+  model::partition_id);
+
+tx::fence_batch_data read_fence_batch(model::record_batch&& b);
+
+model::control_record_type parse_control_batch(const model::record_batch&);
+
+model::record_batch
+make_tx_control_batch(model::producer_identity pid, model::control_record_type);
 
 // snapshot related types
 
