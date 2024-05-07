@@ -100,7 +100,7 @@ inline const std::unordered_set<std::string_view> retired_features = {
   "rm_stm_kafka_cache",
   "transaction_ga",
   "idempotency_v2",
-};
+  "transaction_partitioning"};
 
 /**
  * The definition of a feature specifies rules for when it should
