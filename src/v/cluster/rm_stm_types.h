@@ -45,15 +45,22 @@ struct expiration_info {
     }
 };
 
-struct transaction_info {
-    enum class status_t { ongoing, preparing, prepared, initiating };
+enum class transaction_status : int8_t {
+    ongoing,
+    preparing,
+    prepared,
+    initiating
+};
 
-    status_t status;
+std::ostream& operator<<(std::ostream&, const transaction_status&);
+
+struct transaction_info {
+    transaction_status status;
     model::offset lso_bound;
     std::optional<expiration_info> info;
     std::optional<int32_t> seq;
 
-    std::string_view get_status() const;
+    std::string get_status() const;
     bool is_expired() const;
     std::optional<duration_type> get_staleness() const;
     std::optional<duration_type> get_timeout() const;
