@@ -1550,7 +1550,7 @@ void rm_stm::apply_fence(model::producer_identity pid, model::record_batch b) {
       "applying fence batch, offset: {}, pid: {}",
       batch_base_offset,
       batch_data.bid.pid);
-
+    producer->apply_transaction_begin(b);
     _highest_producer_id = std::max(
       _highest_producer_id, batch_data.bid.pid.get_id());
     auto [fence_it, _] = _log_state.fence_pid_epoch.try_emplace(
@@ -1592,9 +1592,9 @@ ss::future<> rm_stm::apply(const model::record_batch& b) {
           b.header().producer_id);
     } else if (hdr.type == model::record_batch_type::raft_data) {
         if (hdr.attrs.is_control()) {
-            apply_control(bid.pid, tx::parse_control_batch(b));
+            apply_control(b, bid.pid, tx::parse_control_batch(b));
         } else {
-            apply_data(bid, hdr);
+            apply_data(b);
         }
     }
 
@@ -1605,14 +1605,16 @@ ss::future<> rm_stm::apply(const model::record_batch& b) {
 }
 
 void rm_stm::apply_control(
-  model::producer_identity pid, model::control_record_type crt) {
+  const model::record_batch& batch,
+  model::producer_identity pid,
+  model::control_record_type crt) {
     vlog(
       _ctx_log.trace, "applying control batch of type {}, pid: {}", crt, pid);
     // either epoch is the same as fencing or it's lesser in the latter
     // case we don't fence off aborts and commits because transactional
     // manager already decided a tx's outcome and acked it to the client
     auto producer = maybe_create_producer(pid);
-
+    producer->apply_transaction_end(batch, crt);
     if (likely(
           crt == model::control_record_type::tx_abort
           || crt == model::control_record_type::tx_commit)) {
@@ -1666,17 +1668,19 @@ ss::future<> rm_stm::reduce_aborted_list() {
       [this] { _is_abort_idx_reduction_requested = false; });
 }
 
-void rm_stm::apply_data(
-  model::batch_identity bid, const model::record_batch_header& header) {
+void rm_stm::apply_data(const model::record_batch& batch) {
+    const auto& header = batch.header();
+    auto bid = model::batch_identity::from(header);
     if (bid.is_idempotent()) {
         _highest_producer_id = std::max(_highest_producer_id, bid.pid.get_id());
         const auto last_kafka_offset = from_log_offset(header.last_offset());
+        const auto first_kafka_offset = from_log_offset(header.base_offset);
         auto producer = maybe_create_producer(bid.pid);
-        auto needs_touch = producer->update(bid, last_kafka_offset);
+        auto needs_touch = producer->apply_data(
+          batch, first_kafka_offset, last_kafka_offset);
         if (needs_touch) {
             _producer_state_manager.local().touch(*producer, _vcluster_id);
         }
-
         if (bid.is_transactional) {
             vlog(
               _ctx_log.trace,

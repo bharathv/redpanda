@@ -298,12 +298,17 @@ result<request_ptr> producer_state::try_emplace_request(
     return result;
 }
 
-bool producer_state::update(
-  const model::batch_identity& bid, kafka::offset offset) {
+// todo (bharathv): to be implemented in the next commits
+void producer_state::apply_transaction_begin(const model::record_batch&) {}
+void producer_state::apply_transaction_end(
+  const model::record_batch&, model::control_record_type) {}
+bool producer_state::apply_data(
+  const model::record_batch& batch, kafka::offset, kafka::offset end) {
     if (_evicted) {
         return false;
     }
-    bool relink_producer = _requests.stm_apply(bid, offset);
+    auto bid = model::batch_identity::from(batch.header());
+    bool relink_producer = _requests.stm_apply(bid, end);
     vlog(
       _logger.trace,
       "[{}] applied stm update, batch meta: {}, relink_producer: {}",

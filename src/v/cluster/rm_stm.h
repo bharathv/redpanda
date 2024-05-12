@@ -263,8 +263,11 @@ private:
 
     ss::future<> apply(const model::record_batch&) override;
     void apply_fence(model::producer_identity, model::record_batch);
-    void apply_control(model::producer_identity, model::control_record_type);
-    void apply_data(model::batch_identity, const model::record_batch_header&);
+    void apply_control(
+      const model::record_batch&,
+      model::producer_identity,
+      model::control_record_type);
+    void apply_data(const model::record_batch&);
 
     ss::future<> reduce_aborted_list();
     ss::future<> offload_aborted_txns();
