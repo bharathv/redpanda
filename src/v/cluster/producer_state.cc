@@ -242,11 +242,27 @@ std::ostream& operator<<(std::ostream& o, const producer_state& state) {
     fmt::print(
       o,
       "{{ id: {}, group: {}, requests: {}, "
-      "ms_since_last_update: {} }}",
+      "ms_since_last_update: {}, transaction state: {} }}",
       state._id,
       state._group,
       state._requests,
-      state.ms_since_last_update());
+      state.ms_since_last_update(),
+      state._transaction_state);
+    return o;
+}
+
+std::ostream&
+operator<<(std::ostream& o, const producer_state::transaction_state& tx_state) {
+    fmt::print(
+      o,
+      "{{begin: {}, end: {}, sequence: {}, timeout: {}, coordinator partition: "
+      "{}, status: {} }}",
+      tx_state.begin,
+      tx_state.end,
+      tx_state.sequence,
+      tx_state.timeout,
+      tx_state.coordinator_partition,
+      tx_state.status);
     return o;
 }
 
@@ -255,9 +271,46 @@ void producer_state::shutdown_input() {
     _requests.shutdown();
 }
 
+std::optional<transaction_status>
+producer_state::get_transaction_status() const {
+    if (_transaction_state) {
+        return _transaction_state->status;
+    }
+    return std::nullopt;
+}
+
+std::optional<model::tx_seq> producer_state::get_transaction_sequence() const {
+    if (_transaction_state) {
+        return _transaction_state->sequence;
+    }
+    return std::nullopt;
+}
+
+std::optional<model::offset>
+producer_state::get_transaction_begin_offset() const {
+    if (_transaction_state) {
+        return _transaction_state->begin;
+    }
+    return std::nullopt;
+}
+
+bool producer_state::has_transaction_expired() const {
+    if (!_transaction_state || !_transaction_state->timeout) {
+        return false;
+    }
+    if (_force_expire) {
+        // user marked expiry
+        return true;
+    }
+    const auto tx_timeout = _transaction_state->timeout.value();
+    return ss::lowres_system_clock::now() - _last_updated_ts > tx_timeout;
+}
+
 bool producer_state::can_evict() {
     // oplock is taken, do not allow producer state to be evicted
-    if (!_op_lock.ready() || _evicted) {
+    if (
+      !_op_lock.ready() || _evicted || _active_transactions_hook.is_linked()
+      || _transaction_state) {
         return false;
     }
 
@@ -298,17 +351,61 @@ result<request_ptr> producer_state::try_emplace_request(
     return result;
 }
 
-// todo (bharathv): to be implemented in the next commits
-void producer_state::apply_transaction_begin(const model::record_batch&) {}
-void producer_state::apply_transaction_end(
-  const model::record_batch&, model::control_record_type) {}
+void producer_state::apply_transaction_begin(const model::record_batch& batch) {
+    vassert(
+      !_transaction_state && !_active_transactions_hook.is_linked(),
+      "Transaction already in progress {} for producer {}, hook {}",
+      _transaction_state,
+      *this,
+      _active_transactions_hook.is_linked());
+    const auto& header = batch.header();
+    auto batch_data = read_fence_batch(batch.copy());
+    // update pid incase the producer got fenced.
+    _id = batch_data.bid.pid;
+    _transaction_state = transaction_state{
+      .begin = header.base_offset,
+      .end = header.last_offset(),
+      .sequence = batch_data.tx_seq.value_or(model::tx_seq{0}),
+      .timeout = batch_data.transaction_timeout_ms,
+      .status = transaction_status::initiating,
+    };
+}
+
+std::optional<model::tx_range> producer_state::apply_transaction_end(
+  const model::record_batch& batch, model::control_record_type crt) {
+    if (!_transaction_state || crt == model::control_record_type::unknown) {
+        // possible if the log is truncated in the middle of a transaction.
+        return {};
+    }
+    vlog(
+      _logger.trace,
+      "[{}] processing {} for transaction {} at offset {}",
+      *this,
+      crt,
+      _transaction_state.value(),
+      batch.header().base_offset);
+    _active_transactions_hook.unlink();
+    _transaction_state->end = batch.header().last_offset();
+    auto final_tx_state = std::exchange(_transaction_state, std::nullopt);
+    return model::tx_range{
+      .pid = id(), .first = final_tx_state->begin, .last = final_tx_state->end};
+}
+
 bool producer_state::apply_data(
   const model::record_batch& batch, kafka::offset, kafka::offset end) {
-    if (_evicted) {
+    auto bid = model::batch_identity::from(batch.header());
+    if (!bid.is_idempotent() || _evicted) {
         return false;
     }
-    auto bid = model::batch_identity::from(batch.header());
     bool relink_producer = _requests.stm_apply(bid, end);
+    if (bid.is_transactional && _transaction_state) {
+        // _transaction_state may be unset if replaying the log
+        // and the begin got truncated from the log. This is not possible
+        // on a live transaction as max collectible offset cannot
+        // exceed LSO this avoid trunaction of the begin batch.
+        _transaction_state->end = batch.last_offset();
+        _transaction_state->status = transaction_status::ongoing;
+    }
     vlog(
       _logger.trace,
       "[{}] applied stm update, batch meta: {}, relink_producer: {}",
@@ -324,6 +421,28 @@ std::optional<seq_t> producer_state::last_sequence_number() const {
         return std::nullopt;
     }
     return maybe_ptr.value()->_last_sequence;
+}
+
+std::optional<expiration_info> producer_state::get_expiration_info() const {
+    if (!_transaction_state) {
+        return std::nullopt;
+    }
+    auto duration = std::chrono::duration_cast<clock_type::duration>(
+      ms_since_last_update());
+    auto timeout = std::chrono::duration_cast<clock_type::duration>(
+      _transaction_state->timeout.value_or(std::chrono::milliseconds::max()));
+    return expiration_info{
+      .timeout = timeout,
+      .last_update = tx::clock_type::now() - duration,
+      .is_expiration_requested = has_transaction_expired()};
+}
+
+std::optional<model::partition_id>
+producer_state::get_tx_coordinator_partition() const {
+    if (!_transaction_state) {
+        return std::nullopt;
+    }
+    return _transaction_state->coordinator_partition;
 }
 
 producer_state_snapshot

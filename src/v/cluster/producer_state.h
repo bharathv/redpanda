@@ -33,14 +33,12 @@ struct test_fixture;
 
 namespace cluster::tx {
 
+struct expiration_info;
+
 template<class Func>
 concept AcceptsUnits = requires(Func f, ssx::semaphore_units units) {
     f(std::move(units));
 };
-
-class producer_state;
-struct producer_state_snapshot;
-class request;
 
 using producer_ptr = ss::lw_shared_ptr<producer_state>;
 using result_promise_t = ss::shared_promise<result<kafka_result>>;
@@ -191,7 +189,7 @@ public:
       bool reset_sequences = false);
 
     void apply_transaction_begin(const model::record_batch&);
-    void apply_transaction_end(
+    std::optional<model::tx_range> apply_transaction_end(
       const model::record_batch&, model::control_record_type);
     bool apply_data(
       const model::record_batch&, kafka::offset begin, kafka::offset end);
@@ -210,18 +208,42 @@ public:
         return model::timestamp(_last_updated_ts.time_since_epoch() / 1ms);
     }
 
-    std::optional<kafka::offset> current_txn_start_offset() const {
-        return _current_txn_start_offset;
-    }
-
     model::producer_identity id() const { return _id; }
 
-    void update_current_txn_start_offset(std::optional<kafka::offset> offset) {
-        _current_txn_start_offset = offset;
+    bool has_inprogress_transaction() const {
+        return _transaction_state.has_value();
     }
+
+    std::optional<transaction_status> get_transaction_status() const;
+    std::optional<model::tx_seq> get_transaction_sequence() const;
+    std::optional<model::offset> get_transaction_begin_offset() const;
+    std::optional<model::partition_id> get_tx_coordinator_partition() const;
+
+    void force_expire() { _force_expire = true; }
+
+    // Returns true if there is an inprogress transaction and it has expired.
+    bool has_transaction_expired() const;
+
+    std::optional<expiration_info> get_expiration_info() const;
+
+    // Shard wide LRU list of producers.
     safe_intrusive_list_hook _hook;
+    // Each partition maintains a list of active transactional producers
+    // using this hook, check the state machine for details.
+    intrusive_list_hook _active_transactions_hook;
 
 private:
+    struct transaction_state {
+        model::offset begin;
+        model::offset end;
+        // todo: add documentation
+        model::tx_seq sequence;
+        std::optional<std::chrono::milliseconds> timeout;
+        model::partition_id coordinator_partition{
+          model::legacy_tm_ntp.tp.partition};
+        transaction_status status;
+    };
+
     std::chrono::milliseconds ms_since_last_update() const {
         return std::chrono::duration_cast<std::chrono::milliseconds>(
           ss::lowres_system_clock::now() - _last_updated_ts);
@@ -239,9 +261,14 @@ private:
     ss::lowres_system_clock::time_point _last_updated_ts;
     bool _evicted = false;
     ss::noncopyable_function<void()> _post_eviction_hook;
-    std::optional<kafka::offset> _current_txn_start_offset;
+    // Engaged if there is an active transaction from this producer.
+    std::optional<transaction_state> _transaction_state;
+    bool _force_expire = false;
     friend class producer_state_manager;
     friend struct ::test_fixture;
+
+public:
+    friend std::ostream& operator<<(std::ostream& o, const transaction_state&);
 };
 
 } // namespace cluster::tx

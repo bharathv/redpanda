@@ -49,6 +49,7 @@ enum class transaction_status : int8_t {
     ongoing,
     preparing,
     prepared,
+    // todo (bharathv): initiating is a weird name, rename
     initiating
 };
 

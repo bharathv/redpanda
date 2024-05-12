@@ -50,6 +50,7 @@ do_get_producers_for_partition(cluster::partition_manager& pm, model::ktp ntp) {
     }
 
     auto rm_stm_ptr = partition->rm_stm();
+    auto raft = partition->raft();
 
     if (!rm_stm_ptr) {
         vlog(
@@ -65,15 +66,21 @@ do_get_producers_for_partition(cluster::partition_manager& pm, model::ktp ntp) {
     resp.error_code = error_code::none;
     resp.partition_index = ntp.get_partition();
     resp.active_producers.reserve(producers.size());
-    for (const auto& [pid, state] : producers) {
+    for (const auto& [id, state] : producers) {
+        auto tx_begin_offset = state->get_transaction_begin_offset();
+        kafka::offset kafka_tx_begin_offset{-1};
+        if (tx_begin_offset) {
+            // todo: get rid of this, leaking offset translation into kafka
+            kafka_tx_begin_offset = kafka::offset{
+              raft->log()->from_log_offset(tx_begin_offset.value())};
+        }
         resp.active_producers.push_back(producer_state{
-          .producer_id = pid.get_id(),
-          .producer_epoch = pid.get_epoch(),
+          .producer_id = id,
+          .producer_epoch = state->id().epoch,
           .last_sequence = state->last_sequence_number().value_or(-1),
           .last_timestamp = state->last_update_timestamp().value(),
           .coordinator_epoch = -1,
-          .current_txn_start_offset
-          = state->current_txn_start_offset().value_or(kafka::offset(-1)),
+          .current_txn_start_offset = kafka_tx_begin_offset,
         });
     }
     return resp;

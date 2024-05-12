@@ -65,7 +65,7 @@ public:
     static constexpr std::string_view name = "rm_stm";
 
     using producers_t
-      = mt::map_t<absl::btree_map, model::producer_identity, tx::producer_ptr>;
+      = mt::map_t<absl::btree_map, model::producer_id, tx::producer_ptr>;
 
     explicit rm_stm(
       ss::logger&,
@@ -167,19 +167,26 @@ private:
     ss::future<> do_remove_persistent_state();
     ss::future<fragmented_vector<tx::tx_range>>
       do_aborted_transactions(model::offset, model::offset);
-    tx::producer_ptr maybe_create_producer(model::producer_identity);
+    tx::producer_ptr create_or_get_producer(model::producer_identity);
     void cleanup_producer_state(model::producer_identity);
     ss::future<> reset_producers();
+
     ss::future<checked<model::term_id, tx_errc>> do_begin_tx(
       model::producer_identity,
       model::tx_seq,
       std::chrono::milliseconds,
-      model::partition_id);
+      model::partition_id,
+      tx::producer_ptr);
+
     ss::future<tx_errc> do_commit_tx(
-      model::producer_identity, model::tx_seq, model::timeout_clock::duration);
+      model::producer_identity,
+      model::tx_seq,
+      model::timeout_clock::duration,
+      tx::producer_ptr);
     ss::future<tx_errc> do_abort_tx(
       model::producer_identity,
-      std::optional<model::tx_seq>,
+      std::optional<model::tx_seq> expected_seq,
+      tx::producer_ptr,
       model::timeout_clock::duration);
     ss::future<>
     apply_local_snapshot(raft::stm_snapshot_header, iobuf&&) override;
@@ -188,7 +195,6 @@ private:
     ss::future<std::optional<tx::abort_snapshot>>
       load_abort_snapshot(tx::abort_index);
     ss::future<> save_abort_snapshot(tx::abort_snapshot);
-    void update_tx_offsets(tx::producer_ptr, const model::record_batch_header&);
 
     ss::future<result<kafka_result>> do_replicate(
       model::batch_identity,
@@ -200,10 +206,7 @@ private:
       model::batch_identity, model::record_batch_reader);
 
     ss::future<result<kafka_result>> do_sync_and_transactional_replicate(
-      tx::producer_ptr,
-      model::batch_identity,
-      model::record_batch_reader,
-      ssx::semaphore_units);
+      tx::producer_ptr, model::batch_identity, model::record_batch_reader);
 
     ss::future<result<kafka_result>> do_transactional_replicate(
       model::term_id,
@@ -242,24 +245,11 @@ private:
     ss::future<bool> sync(model::timeout_clock::duration);
     constexpr bool check_tx_permitted() { return true; }
 
-    void track_tx(model::producer_identity, std::chrono::milliseconds);
-    void abort_old_txes();
-    ss::future<> do_abort_old_txes();
-    ss::future<> try_abort_old_tx(model::producer_identity);
-    ss::future<tx_errc> do_try_abort_old_tx(model::producer_identity);
-    void try_arm(tx::time_point_type);
+    ss::future<> do_abort_expired_txes();
+    ss::future<> try_abort_old_tx(tx::producer_ptr);
+    ss::future<tx_errc> do_try_abort_old_tx(tx::producer_ptr);
 
-    ss::future<std::error_code> do_mark_expired(model::producer_identity pid);
-
-    bool is_known_session(model::producer_identity pid) const {
-        auto is_known = false;
-        is_known |= _log_state.ongoing_map.contains(pid);
-        is_known |= _log_state.current_txes.contains(pid);
-        return is_known;
-    }
-
-    abort_origin
-    get_abort_origin(const model::producer_identity&, model::tx_seq) const;
+    abort_origin get_abort_origin(tx::producer_ptr, model::tx_seq) const;
 
     ss::future<> apply(const model::record_batch&) override;
     void apply_fence(model::producer_identity, model::record_batch);
@@ -271,16 +261,7 @@ private:
 
     ss::future<> reduce_aborted_list();
     ss::future<> offload_aborted_txns();
-
-    std::optional<model::tx_seq>
-    get_tx_seq(model::producer_identity pid) const {
-        auto log_it = _log_state.current_txes.find(pid);
-        if (log_it != _log_state.current_txes.end()) {
-            return log_it->second.tx_seq;
-        }
-
-        return std::nullopt;
-    }
+    void abort_old_txes();
 
     /**
      * Return when the committed offset has been established when STM starts.
@@ -307,85 +288,18 @@ private:
 
     template<class T>
     using allocator = util::tracking_allocator<T>;
+
+    // todo :rename to aborted snapshot tracker
     struct log_state {
-        explicit log_state(util::mem_tracker& parent)
-          : _tracker(parent.create_child("log-state"))
-          , fence_pid_epoch(mt::map<
-                            absl::flat_hash_map,
-                            model::producer_id,
-                            model::producer_epoch>(_tracker))
-          , ongoing_map(mt::map<
-                        absl::flat_hash_map,
-                        model::producer_identity,
-                        tx::tx_range>(_tracker))
-          , ongoing_set(mt::set<absl::btree_set, model::offset>(_tracker))
-          , current_txes(
-              mt::
-                map<absl::flat_hash_map, model::producer_identity, tx::tx_data>(
-                  _tracker))
-          , expiration(mt::map<
-                       absl::flat_hash_map,
-                       model::producer_identity,
-                       tx::expiration_info>(_tracker)) {}
-
-        log_state(log_state&) noexcept = delete;
-        log_state(log_state&&) noexcept = delete;
-        log_state& operator=(log_state&) noexcept = delete;
-        log_state& operator=(log_state&&) noexcept = delete;
-        ~log_state() noexcept { reset(); }
-
-        ss::shared_ptr<util::mem_tracker> _tracker;
-        // we enforce monotonicity of epochs related to the same producer_id
-        // and fence off out of order requests
-        mt::unordered_map_t<
-          absl::flat_hash_map,
-          model::producer_id,
-          model::producer_epoch>
-          fence_pid_epoch;
-        // a map from session id (aka producer_identity) to its current tx
-        mt::unordered_map_t<
-          absl::flat_hash_map,
-          model::producer_identity,
-          tx::tx_range>
-          ongoing_map;
-        // a heap of the first offsets of the ongoing transactions
-        mt::set_t<absl::btree_set, model::offset> ongoing_set;
         fragmented_vector<tx::tx_range> aborted;
         fragmented_vector<tx::abort_index> abort_indexes;
         tx::abort_snapshot last_abort_snapshot{.last = model::offset(-1)};
-        mt::unordered_map_t<
-          absl::flat_hash_map,
-          model::producer_identity,
-          tx::tx_data>
-          current_txes;
-        mt::unordered_map_t<
-          absl::flat_hash_map,
-          model::producer_identity,
-          tx::expiration_info>
-          expiration;
-
-        void forget(const model::producer_identity& pid);
-        void reset();
     };
-
-    ss::lw_shared_ptr<mutex> get_tx_lock(model::producer_id pid) {
-        auto lock_it = _tx_locks.find(pid);
-        if (lock_it == _tx_locks.end()) {
-            auto [new_it, _] = _tx_locks.try_emplace(
-              pid, ss::make_lw_shared<mutex>("get_tx_lock"));
-            lock_it = new_it;
-        }
-        return lock_it->second;
-    }
 
     kafka::offset from_log_offset(model::offset old_offset) const;
     model::offset to_log_offset(kafka::offset new_offset) const;
 
-    std::optional<tx::expiration_info>
-    get_expiration_info(model::producer_identity pid) const;
-    std::optional<int32_t> get_seq_number(model::producer_identity pid) const;
-
-    chunked_vector<model::producer_identity> get_expired_producers() const;
+    chunked_vector<tx::producer_ptr> get_expired_producers() const;
 
     uint8_t active_snapshot_version();
 
@@ -397,21 +311,13 @@ private:
           features::feature::transaction_partitioning);
     }
 
-    friend std::ostream& operator<<(std::ostream&, const log_state&);
-    ss::future<> maybe_log_tx_stats();
-    void log_tx_stats();
-
     // Defines the commit offset range for the stm bootstrap.
     // Set on first apply upcall and used to identify if the
     // stm is still replaying the log.
     std::optional<model::offset> _bootstrap_committed_offset;
     ss::basic_rwlock<> _state_lock;
     bool _is_abort_idx_reduction_requested{false};
-    mt::unordered_map_t<
-      absl::flat_hash_map,
-      model::producer_id,
-      ss::lw_shared_ptr<mutex>>
-      _tx_locks;
+
     log_state _log_state;
     ss::timer<tx::clock_type> auto_abort_timer;
     std::chrono::milliseconds _sync_timeout;
@@ -427,12 +333,26 @@ private:
       _abort_snapshot_sizes{};
     ss::sharded<features::feature_table>& _feature_table;
     config::binding<std::chrono::seconds> _log_stats_interval_s;
-    ss::timer<tx::clock_type> _log_stats_timer;
     prefix_logger _ctx_log;
     ss::sharded<tx::producer_state_manager>& _producer_state_manager;
     std::optional<model::vcluster_id> _vcluster_id;
 
+    // All producers, idempotent and transactional
+    // Entries in this map are keyed by "producer_id". This ensures that
+    // only a single active producer epoch exists for a given id. This
+    // behavior is used to implement fencing for transactional producers
+    // (latest epoch wins). For idempotent producers, every session has a unique
+    // producer_id (with epoch=0) which ensures that concurrent idempotent
+    // sessions have different entries in this map.
     producers_t _producers;
+
+    // Producers that have currently active transactions on this partition.
+    // Entries are sorted by begin offset of the transaction, earliest first.
+    using active_transactions_t = intrusive_list<
+      tx::producer_state,
+      &tx::producer_state::_active_transactions_hook>;
+    active_transactions_t _active_transactional_producers;
+
     metrics::internal_metric_groups _metrics;
     ss::abort_source _as;
     ss::gate _gate;

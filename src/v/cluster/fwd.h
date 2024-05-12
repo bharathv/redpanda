@@ -84,7 +84,11 @@ class rm_stm;
 
 namespace tx {
 class producer_state_manager;
-}
+class producer_state;
+struct producer_state_snapshot;
+enum class transaction_status : int8_t;
+class request;
+} // namespace tx
 
 namespace node {
 class local_monitor;
