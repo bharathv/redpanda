@@ -234,6 +234,12 @@ public:
         return _transaction_state;
     }
 
+    // Returns true if there is an open transaction _and_ if it
+    // has expired.
+    bool has_transaction_expired() const;
+
+    void force_transaction_expiry() { _force_transaction_expiry = true; }
+
     // Used to track all active producers on a shard (across all the
     // partitions).
     safe_intrusive_list_hook _hook;
@@ -250,21 +256,28 @@ private:
     }
 
     prefix_logger& _logger;
+
+    // --- Following state is serialized to snapshot
+    //
     model::producer_identity _id;
     raft::group_id _group;
-    // serializes all the operations on this producer
-    mutex _op_lock{"producer_state::_op_lock"};
-
     requests _requests;
     // Tracks the last time an operation is run with this producer.
     // Used to evict stale producers.
     ss::lowres_system_clock::time_point _last_updated_ts;
-    bool _evicted = false;
-    ss::noncopyable_function<void()> _post_eviction_hook;
-    std::optional<kafka::offset> _current_txn_start_offset;
     // Disengaged optional indicates no in progress transaction for
     // this producer.
     std::optional<producer_partition_transaction_state> _transaction_state;
+
+    // --- In memory state below, not serialized to snapshot
+    //
+    // serializes all the operations on this producer
+    mutex _op_lock{"producer_state::_op_lock"};
+    // Used to implement force eviction via admin APIs
+    bool _force_transaction_expiry{false};
+    bool _evicted = false;
+    ss::noncopyable_function<void()> _post_eviction_hook;
+    std::optional<kafka::offset> _current_txn_start_offset;
     friend class producer_state_manager;
     friend struct ::test_fixture;
 };

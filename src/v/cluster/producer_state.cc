@@ -392,6 +392,19 @@ std::optional<seq_t> producer_state::last_sequence_number() const {
     return maybe_ptr.value()->_last_sequence;
 }
 
+bool producer_state::has_transaction_expired() const {
+    if (!_transaction_state) {
+        // nothing to expire.
+        return false;
+    }
+    if (_force_transaction_expiry) {
+        return true;
+    }
+    const auto tx_timeout = _transaction_state->timeout.value_or(
+      std::chrono::milliseconds::max());
+    return ss::lowres_system_clock::now() - _last_updated_ts > tx_timeout;
+}
+
 producer_state_snapshot
 producer_state::snapshot(kafka::offset log_start_offset) const {
     producer_state_snapshot snapshot;
