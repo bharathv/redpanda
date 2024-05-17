@@ -13,7 +13,6 @@
 
 #include "base/vassert.h"
 #include "cluster/logger.h"
-#include "cluster/rm_stm_types.h"
 
 namespace cluster::tx {
 
@@ -222,7 +221,8 @@ producer_state::producer_state(
 
 bool producer_state::operator==(const producer_state& other) const {
     return _id == other._id && _group == other._group
-           && _requests == other._requests;
+           && _requests == other._requests
+           && _transaction_state == other._transaction_state;
 }
 
 std::ostream& operator<<(std::ostream& o, const requests& requests) {
@@ -238,11 +238,12 @@ std::ostream& operator<<(std::ostream& o, const producer_state& state) {
     fmt::print(
       o,
       "{{ id: {}, group: {}, requests: {}, "
-      "ms_since_last_update: {} }}",
+      "ms_since_last_update: {}, transaction_state: {} }}",
       state._id,
       state._group,
       state._requests,
-      state.ms_since_last_update());
+      state.ms_since_last_update(),
+      state._transaction_state);
     return o;
 }
 
@@ -252,19 +253,18 @@ void producer_state::shutdown_input() {
 }
 
 bool producer_state::can_evict() {
-    // oplock is taken, do not allow producer state to be evicted
-    if (!_op_lock.ready() || _evicted) {
+    if (
+      // Check if already evicted
+      _evicted
+      // Check if an operation is in progress using this producer
+      || !_op_lock.ready()
+      // Check if there are operations pending state machine sync
+      || !_requests._inflight_requests.empty()
+      //  Check if there are any open transactions on this producer.
+      || _transaction_state) {
+        vlog(_logger.debug, "[{}] cannot evict producer.", *this);
         return false;
     }
-
-    if (!_requests._inflight_requests.empty()) {
-        vlog(
-          _logger.debug,
-          "[{}] cannot evict because of pending inflight requests",
-          *this);
-        return false;
-    }
-
     vlog(_logger.debug, "[{}] evicting producer", *this);
     _evicted = true;
     shutdown_input();

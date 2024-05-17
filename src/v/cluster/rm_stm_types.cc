@@ -129,6 +129,22 @@ std::ostream& operator<<(std::ostream& o, const abort_snapshot& as) {
     return o;
 }
 
+std::ostream& operator<<(
+  std::ostream& o, const producer_partition_transaction_state& tx_state) {
+    fmt::print(
+      o,
+      "{{first: {}, last: {}, sequence: {}, timeout: {}, coordinator "
+      "partition: "
+      "{}, status: {} }}",
+      tx_state.first,
+      tx_state.last,
+      tx_state.sequence,
+      tx_state.timeout,
+      tx_state.coordinator_partition,
+      tx_state.status);
+    return o;
+}
+
 model::record_batch make_fence_batch(
   model::producer_identity pid,
   model::tx_seq tx_seq,

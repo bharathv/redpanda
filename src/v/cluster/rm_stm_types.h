@@ -131,6 +131,43 @@ struct abort_snapshot {
     bool operator==(const abort_snapshot&) const = default;
 };
 
+// All transaction related state of an open transaction
+// on a single partition.
+struct producer_partition_transaction_state
+  : serde::envelope<
+      producer_partition_transaction_state,
+      serde::version<0>,
+      serde::compat_version<0>> {
+    // begin offset of the open transaction.
+    model::offset first;
+    // current last offset of the open transaction. This
+    // changes as more data batches are appended as a part
+    // of the transaction.
+    model::offset last;
+    // sequence is bumped for every completed (committed/aborted) transaction
+    // using the same producer id. This helps disambiguate requests meant for
+    // different transactions with the same producer id.
+    model::tx_seq sequence;
+    // An optional user set timeout for the transaction.
+    std::optional<std::chrono::milliseconds> timeout;
+    // Transaction coordinator partition (tx/n) coordinating this transaction.
+    model::partition_id coordinator_partition{
+      model::legacy_tm_ntp.tp.partition};
+    // Current status of the transaction.
+    partition_transaction_status status;
+
+    bool operator==(const producer_partition_transaction_state&) const
+      = default;
+
+    auto serde_fields() {
+        return std::tie(
+          first, last, sequence, timeout, coordinator_partition, status);
+    }
+};
+
+std::ostream&
+operator<<(std::ostream& o, const producer_partition_transaction_state&);
+
 struct producer_state_snapshot {
     struct finished_request {
         int32_t _first_sequence;

@@ -12,6 +12,7 @@
 #pragma once
 
 #include "cluster/namespaced_cache.h"
+#include "cluster/rm_stm_types.h"
 #include "cluster/types.h"
 #include "container/intrusive_list_helpers.h"
 #include "model/record.h"
@@ -218,6 +219,15 @@ public:
         _requests.gc_requests_from_older_terms(current_term);
     }
 
+    bool has_transaction_in_progress() const {
+        return bool(_transaction_state);
+    }
+
+    const std::optional<producer_partition_transaction_state>&
+    transaction_state() const {
+        return _transaction_state;
+    }
+
     safe_intrusive_list_hook _hook;
 
 private:
@@ -239,6 +249,9 @@ private:
     bool _evicted = false;
     ss::noncopyable_function<void()> _post_eviction_hook;
     std::optional<kafka::offset> _current_txn_start_offset;
+    // Disengaged optional indicates no in progress transaction for
+    // this producer.
+    std::optional<producer_partition_transaction_state> _transaction_state;
     friend class producer_state_manager;
     friend struct ::test_fixture;
 };
