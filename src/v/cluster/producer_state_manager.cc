@@ -117,7 +117,7 @@ void producer_state_manager::do_evict_excess_producers() {
         // temporarily and relinks back after the operation is finished
         // essentially resulting in the fact that only currently inactive
         // producers are in the list. This makes the whole logic lock free.
-        ssx::spawn_with_gate(_gate, [&state] { return state.evict(); });
+        state.evict();
         --_num_producers;
         ++_eviction_counter;
     }
