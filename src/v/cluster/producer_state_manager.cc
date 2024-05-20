@@ -57,6 +57,12 @@ void producer_state_manager::setup_metrics() {
          sm::description("Number of evicted producers so far."))});
 }
 
+void producer_state_manager::rearm_timer_for_testing(
+  std::chrono::milliseconds new_period) {
+    period = new_period;
+    _reaper.rearm(ss::lowres_clock::now() + period);
+}
+
 void producer_state_manager::register_producer(producer_state& state) {
     link(state);
     ++_num_producers;
