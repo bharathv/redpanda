@@ -310,7 +310,7 @@ void producer_state::apply_data(
     }
     _requests.stm_apply(bid, header.ctx.term, offset);
     if (bid.is_transactional) {
-        if (_transaction_state) {
+        if (!_transaction_state) {
             // possible if begin batch got truncated.
             _transaction_state = producer_partition_transaction_state{
               .first = header.base_offset,
@@ -354,6 +354,7 @@ void producer_state::apply_transaction_begin(
       .last = header.last_offset(),
       .sequence = parsed_batch.tx_seq.value_or(model::tx_seq{0}),
       .timeout = parsed_batch.transaction_timeout_ms,
+      .coordinator_partition = parsed_batch.tm,
       .status = partition_transaction_status::initialized,
     };
 }
@@ -376,7 +377,7 @@ producer_state::apply_transaction_end(model::control_record_type crt) {
         return std::nullopt;
     }
 
-    vlog(_logger.trace, "[{}] Applying batch: {}, record: {}", *this, crt);
+    vlog(_logger.trace, "[{}] Applying record: {}", *this, crt);
     auto final_tx_state = std::exchange(_transaction_state, std::nullopt);
     return model::tx_range{
       .pid = id(),

@@ -64,27 +64,6 @@ rm_stm::parse_tx_control_batch(const model::record_batch& b) {
     return parse_control_batch(b);
 }
 
-void rm_stm::log_state::forget(const model::producer_identity& pid) {
-    auto it = fence_pid_epoch.find(pid.get_id());
-    if (it != fence_pid_epoch.end() && it->second == pid.get_epoch()) {
-        fence_pid_epoch.erase(pid.get_id());
-    }
-    ongoing_map.erase(pid);
-    current_txes.erase(pid);
-    expiration.erase(pid);
-}
-
-void rm_stm::log_state::reset() {
-    fence_pid_epoch.clear();
-    ongoing_map.clear();
-    ongoing_set.clear();
-    current_txes.clear();
-    expiration.clear();
-    aborted.clear();
-    abort_indexes.clear();
-    last_abort_snapshot = {model::offset(-1)};
-}
-
 rm_stm::rm_stm(
   ss::logger& logger,
   raft::consensus* c,
@@ -93,11 +72,6 @@ rm_stm::rm_stm(
   ss::sharded<tx::producer_state_manager>& producer_state_manager,
   std::optional<model::vcluster_id> vcluster_id)
   : raft::persisted_stm<>(rm_stm_snapshot, logger, c)
-  , _tx_locks(
-      mt::
-        map<absl::flat_hash_map, model::producer_id, ss::lw_shared_ptr<mutex>>(
-          _tx_root_tracker.create_child("tx-locks")))
-  , _log_state(_tx_root_tracker)
   , _sync_timeout(config::shard_local_cfg().rm_sync_timeout_ms.value())
   , _tx_timeout_delay(config::shard_local_cfg().tx_timeout_delay_ms.value())
   , _abort_interval_ms(config::shard_local_cfg()
@@ -113,10 +87,7 @@ rm_stm::rm_stm(
   , _feature_table(feature_table)
   , _ctx_log(txlog, ssx::sformat("[{}]", c->ntp()))
   , _producer_state_manager(producer_state_manager)
-  , _vcluster_id(vcluster_id)
-  , _producers(
-      mt::map<absl::btree_map, model::producer_identity, cluster::producer_ptr>(
-        _tx_root_tracker.create_child("producers"))) {
+  , _vcluster_id(vcluster_id) {
     vassert(
       _feature_table.local().is_active(features::feature::transaction_ga),
       "unexpected state for transactions support. skipped a few "
@@ -163,7 +134,7 @@ producer_ptr rm_stm::maybe_create_producer(model::producer_identity pid) {
     // not movable
     // 2. btree_map does not support lazy_emplace and we are stuck to btree_map
     // as it is memory friendly.
-    auto it = _producers.find(pid);
+    auto it = _producers.find(pid.get_id());
     if (it != _producers.end()) {
         return it->second;
     }
@@ -172,27 +143,20 @@ producer_ptr rm_stm::maybe_create_producer(model::producer_identity pid) {
           cleanup_producer_state(pid);
       });
     _producer_state_manager.local().register_producer(*producer, _vcluster_id);
-    _producers.emplace(pid, producer);
+    _producers.emplace(pid.get_id(), producer);
 
     return producer;
 }
 
 void rm_stm::cleanup_producer_state(model::producer_identity pid) {
-    // If this lock is not being held in the map, then we can clean it up.
-    // Otherwise assume a later epoch of the same producer is using the lock.
-    auto lock_it = _tx_locks.find(pid.get_id());
-    if (lock_it != _tx_locks.end() && lock_it->second->ready()) {
-        lock_it->second->broken();
-        _tx_locks.erase(lock_it);
+    auto it = _producers.find(pid.get_id());
+    if (it != _producers.end() && it->second->id() == pid) {
+        vassert(
+          !it->second->_active_transaction_hook.is_linked(),
+          "Cleaning up {} while active transaction is in progress",
+          *(it->second));
+        _producers.erase(it);
     }
-
-    if (!_log_state.current_txes.contains(pid)) {
-        // No active transactions for this producer.
-        // note: this branch can be removed once we port tx state
-        // into producer_state.
-        _log_state.forget(pid);
-    }
-    _producers.erase(pid);
 };
 
 ss::future<> rm_stm::reset_producers() {
@@ -204,27 +168,29 @@ ss::future<> rm_stm::reset_producers() {
             *producer, _vcluster_id);
           return ss::now();
       });
+    _active_tx_producers.clear();
     _producers.clear();
 }
 
 ss::future<checked<model::term_id, tx_errc>> rm_stm::begin_tx(
-  model::producer_identity pid,
+  model::producer_identity new_pid,
   model::tx_seq tx_seq,
   std::chrono::milliseconds transaction_timeout_ms,
   model::partition_id tm) {
-    return _state_lock.hold_read_lock().then(
-      [this, pid, tx_seq, transaction_timeout_ms, tm](
-        ss::basic_rwlock<>::holder unit) mutable {
-          return get_tx_lock(pid.get_id())
-            ->with([this, pid, tx_seq, transaction_timeout_ms, tm]() {
-                return do_begin_tx(pid, tx_seq, transaction_timeout_ms, tm);
-            })
-            .finally([u = std::move(unit)] {});
+    auto state_lock = co_await _state_lock.hold_read_lock();
+    auto producer = maybe_create_producer(new_pid);
+    co_return co_await producer->run_with_lock(
+      [this, new_pid, tx_seq, transaction_timeout_ms, tm, producer](
+        ssx::semaphore_units units) {
+          return do_begin_tx(
+                   new_pid, producer, tx_seq, transaction_timeout_ms, tm)
+            .finally([units = std::move(units)] {});
       });
 }
 
 ss::future<checked<model::term_id, tx_errc>> rm_stm::do_begin_tx(
   model::producer_identity pid,
+  producer_ptr producer,
   model::tx_seq tx_seq,
   std::chrono::milliseconds transaction_timeout_ms,
   model::partition_id tm) {
@@ -268,89 +234,45 @@ ss::future<checked<model::term_id, tx_errc>> rm_stm::do_begin_tx(
       transaction_timeout_ms,
       tm,
       synced_term);
-    // checking / setting pid fencing
-    auto fence_it = _log_state.fence_pid_epoch.find(pid.get_id());
-    if (fence_it == _log_state.fence_pid_epoch.end()) {
-        // intentionally empty
-    } else if (pid.get_epoch() > fence_it->second) {
-        auto old_pid = model::producer_identity{pid.get_id(), fence_it->second};
-        // there is a fence, it might be that tm_stm failed, forget about
-        // an ongoing transaction, assigned next pid for the same tx.id and
-        // started a new transaction without aborting the previous one.
-        //
-        // at the same time it's possible that it already aborted the old
-        // tx before starting this. do_abort_tx is idempotent so calling it
-        // just in case to proactivly abort the tx instead of waiting for
-        // the timeout
-        //
-        // moreover do_abort_tx is co-idempotent with do_commit_tx so if a
-        // tx was committed calling do_abort_tx will do nothing
-        auto ar = co_await do_abort_tx(old_pid, std::nullopt, _sync_timeout);
+
+    auto current_pid = producer->id();
+    if (pid.epoch < current_pid.epoch) {
+        // request from an older instance of the producer
+        co_return tx_errc::fenced;
+    } else if (pid.epoch > current_pid.epoch) {
+        // abort any transactions from the older instance of the producer.
+        auto ar = co_await do_abort_tx(producer, std::nullopt, _sync_timeout);
         if (ar != tx_errc::none) {
             vlog(
               _ctx_log.trace,
-              "can't begin tx {} because abort of a prev tx {} failed with {}; "
-              "retrying",
+              "can't begin tx {} because abort of a prev tx {} failed with {}",
               pid,
-              old_pid,
+              current_pid,
               ar);
             co_return tx_errc::stale;
         }
-
-        if (is_known_session(old_pid)) {
-            vlog(
-              _ctx_log.warn,
-              "can't begin a tx {}: an aborted tx should have disappeared",
-              pid);
-            // can't begin a transaction while previous tx is in progress
-            co_return tx_errc::unknown_server_error;
+    } else if (producer->has_transaction_in_progress()) {
+        // check for duplicate request
+        if (
+          producer->transaction_state()->status
+          == tx::partition_transaction_status::initialized) {
+            // no data yet, in the transaction ignore the duplicate
+            // request by returning success
+            co_return synced_term;
         }
-        // we want to replicate tx_fence batch on every transaction so
-        // intentionally dropping through
-    } else if (pid.get_epoch() < fence_it->second) {
         vlog(
-          _ctx_log.error,
-          "pid {} fenced out by epoch {}",
-          pid,
-          fence_it->second);
-        co_return tx_errc::fenced;
+          _ctx_log.warn,
+          "duplicate begin request with producer after the transaction already "
+          "began: {}",
+          producer);
+        co_return tx_errc::unknown_server_error;
     }
-
-    auto txseq_it = _log_state.current_txes.find(pid);
-    if (txseq_it != _log_state.current_txes.end()) {
-        if (txseq_it->second.tx_seq != tx_seq) {
-            vlog(
-              _ctx_log.warn,
-              "can't begin a tx {} with tx_seq {}: a producer id is already "
-              "involved in a tx with tx_seq {}",
-              pid,
-              tx_seq,
-              txseq_it->second.tx_seq);
-            co_return tx_errc::unknown_server_error;
-        }
-        auto it = _log_state.ongoing_map.find(pid);
-        if (it != _log_state.ongoing_map.end()) {
-            // there is already a transaction in progress.
-            // handle back to back duplicate begin_tx requests
-            // this can happen due to some undefined client behavior.
-            // note: this code is getting refactored soon with move to
-            // producer_state, temporary fix up to make chaos happy.
-            const auto& tx = it->second;
-            if (tx.last > tx.first) {
-                // the transaction already has a data batch and
-                // begin_tx at this point is unpexpected.
-                vlog(
-                  _ctx_log.warn,
-                  "can't begin a tx {} with tx_seq {}: it was already begun "
-                  "and "
-                  "accepted writes",
-                  pid,
-                  tx_seq);
-                co_return tx_errc::unknown_server_error;
-            }
-        }
-        co_return synced_term;
-    }
+    // By now any in progresss transactions are aborted and the resulting
+    // state and the resulting changes are reflected in the producer state.
+    vassert(
+      !producer->transaction_state(),
+      "There is an in progress transaction for producer, invalid state: {}",
+      producer);
 
     model::record_batch batch = make_fence_batch(
       pid, tx_seq, transaction_timeout_ms, tm);
@@ -399,24 +321,13 @@ ss::future<checked<model::term_id, tx_errc>> rm_stm::do_begin_tx(
         co_return tx_errc::leader_not_found;
     }
 
-    auto tx_seq_it = _log_state.current_txes.find(pid);
-    if (tx_seq_it == _log_state.current_txes.end()) {
-        vlog(
-          _ctx_log.error,
-          "tx_seqs should be updated after fencing pid:{} tx_seq:{}",
-          pid,
-          tx_seq);
-        co_return tx_errc::unknown_server_error;
-    }
-    if (tx_seq_it->second.tx_seq != tx_seq) {
-        vlog(
-          _ctx_log.error,
-          "expected tx_seq:{} for pid:{} got {}",
-          tx_seq,
-          pid,
-          tx_seq_it->second.tx_seq);
-        co_return tx_errc::unknown_server_error;
-    }
+    const auto& tx_state = producer->transaction_state();
+    vassert(
+      tx_state && tx_state->sequence == tx_seq,
+      "Inconsistent state detected after tx begin, expected sequence: {}, from "
+      "producer: {}",
+      tx_seq,
+      *producer);
 
     co_return synced_term;
 }
@@ -425,20 +336,23 @@ ss::future<tx_errc> rm_stm::commit_tx(
   model::producer_identity pid,
   model::tx_seq tx_seq,
   model::timeout_clock::duration timeout) {
-    return _state_lock.hold_read_lock().then(
-      [this, pid, tx_seq, timeout](ss::basic_rwlock<>::holder unit) mutable {
-          return get_tx_lock(pid.get_id())
-            ->with([this, pid, tx_seq, timeout]() {
-                return do_commit_tx(pid, tx_seq, timeout);
-            })
-            .finally([u = std::move(unit)] {});
+    auto state_lock_holder = co_await _state_lock.hold_read_lock();
+    auto producer = maybe_create_producer(pid);
+    if (pid != producer->id()) {
+        co_return tx_errc::fenced;
+    }
+    co_return co_await producer->run_with_lock(
+      [this, tx_seq, timeout, producer](ssx::semaphore_units units) {
+          return do_commit_tx(producer, tx_seq, timeout)
+            .finally([units = std::move(units)] {});
       });
 }
 
 ss::future<tx_errc> rm_stm::do_commit_tx(
-  model::producer_identity pid,
+  tx::producer_ptr producer,
   model::tx_seq tx_seq,
   model::timeout_clock::duration timeout) {
+    auto pid = producer->id();
     vlog(_ctx_log.trace, "commit tx pid: {}, tx sequence: {}", pid, tx_seq);
     if (!check_tx_permitted()) {
         co_return tx_errc::request_rejected;
@@ -450,47 +364,41 @@ ss::future<tx_errc> rm_stm::do_commit_tx(
         co_return tx_errc::stale;
     }
     auto synced_term = _insync_term;
-    auto fence_it = _log_state.fence_pid_epoch.find(pid.get_id());
-    if (fence_it == _log_state.fence_pid_epoch.end()) {
-        // begin_tx should have set a fence
-        vlog(_ctx_log.warn, "can't commit a tx: unknown pid:{}", pid);
-        co_return tx_errc::request_rejected;
-    }
-    if (pid.get_epoch() != fence_it->second) {
+
+    auto transaction_sequence = producer->get_transaction_sequence();
+    if (!transaction_sequence) {
         vlog(
-          _ctx_log.error,
-          "Can't commit pid:{} - fenced out by epoch {}",
-          pid,
-          fence_it->second);
-        co_return tx_errc::fenced;
+          _ctx_log.warn,
+          "No transaction sequence found for {}, attempting to commit "
+          "sequence: {}",
+          *producer,
+          tx_seq);
+        co_return tx_errc::invalid_txn_state;
     }
 
-    auto tx_seqs_it = _log_state.current_txes.find(pid);
-    if (tx_seqs_it != _log_state.current_txes.end()) {
-        if (tx_seqs_it->second.tx_seq > tx_seq) {
-            // rare situation:
-            //   * tm_stm begins (tx_seq+1)
-            //   * request on this rm passes but then tm_stm fails and forgets
-            //   about this tx
-            //   * during recovery tm_stm recommits previous tx (tx_seq)
-            // existence of {pid, tx_seq+1} implies {pid, tx_seq} is committed
-            vlog(
-              _ctx_log.trace,
-              "Already commited pid:{} tx_seq:{} - a higher tx_seq:{} was "
-              "observed",
-              pid,
-              tx_seq,
-              tx_seqs_it->second.tx_seq);
-            co_return tx_errc::none;
-        } else if (tx_seq != tx_seqs_it->second.tx_seq) {
-            vlog(
-              _ctx_log.trace,
-              "can't commit pid:{} tx: passed txseq {} doesn't match local {}",
-              pid,
-              tx_seq,
-              tx_seqs_it->second.tx_seq);
-            co_return tx_errc::request_rejected;
-        }
+    if (*transaction_sequence > tx_seq) {
+        // rare situation:
+        //   * tm_stm begins (tx_seq+1)
+        //   * request on this rm passes but then tm_stm fails and forgets
+        //   about this tx
+        //   * during recovery tm_stm recommits previous tx (tx_seq)
+        // existence of {pid, tx_seq+1} implies {pid, tx_seq} is committed
+        vlog(
+          _ctx_log.trace,
+          "Already commited pid:{} tx_seq:{} - a higher tx_seq:{} was "
+          "observed",
+          *producer,
+          tx_seq,
+          *transaction_sequence);
+        co_return tx_errc::none;
+    } else if (transaction_sequence != tx_seq) {
+        vlog(
+          _ctx_log.trace,
+          "can't commit pid:{} tx: passed txseq {} doesn't match local {}",
+          *producer,
+          tx_seq,
+          *transaction_sequence);
+        co_return tx_errc::request_rejected;
     }
 
     auto batch = make_tx_control_batch(
@@ -522,19 +430,18 @@ ss::future<tx_errc> rm_stm::do_commit_tx(
 }
 
 abort_origin rm_stm::get_abort_origin(
-  const model::producer_identity& pid, model::tx_seq tx_seq) const {
-    auto tx_seq_for_pid = get_tx_seq(pid);
-    if (!tx_seq_for_pid) {
+  tx::producer_ptr producer, model::tx_seq expected_tx_seq) const {
+    auto current_tx_seq = producer->get_transaction_sequence();
+    if (!current_tx_seq) {
         return abort_origin::present;
     }
 
-    if (tx_seq < *tx_seq_for_pid) {
+    if (expected_tx_seq < *current_tx_seq) {
         return abort_origin::past;
     }
-    if (*tx_seq_for_pid < tx_seq) {
+    if (*current_tx_seq < expected_tx_seq) {
         return abort_origin::future;
     }
-
     return abort_origin::present;
 }
 
@@ -542,13 +449,15 @@ ss::future<tx_errc> rm_stm::abort_tx(
   model::producer_identity pid,
   model::tx_seq tx_seq,
   model::timeout_clock::duration timeout) {
-    return _state_lock.hold_read_lock().then(
-      [this, pid, tx_seq, timeout](ss::basic_rwlock<>::holder unit) mutable {
-          return get_tx_lock(pid.get_id())
-            ->with([this, pid, tx_seq, timeout]() {
-                return do_abort_tx(pid, tx_seq, timeout);
-            })
-            .finally([u = std::move(unit)] {});
+    auto state_lock_holder = co_await _state_lock.hold_read_lock();
+    auto producer = maybe_create_producer(pid);
+    if (pid != producer->id()) {
+        co_return errc::invalid_producer_epoch;
+    }
+    co_return co_await producer->run_with_lock(
+      [this, tx_seq, timeout, producer](ssx::semaphore_units units) {
+          return do_abort_tx(producer, tx_seq, timeout)
+            .finally([units = std::move(units)] {});
       });
 }
 
@@ -557,13 +466,14 @@ ss::future<tx_errc> rm_stm::abort_tx(
 // and to fence off the old epoch.
 // we need to check tx_seq to filter out stale requests
 ss::future<tx_errc> rm_stm::do_abort_tx(
-  model::producer_identity pid,
-  std::optional<model::tx_seq> tx_seq,
+  producer_ptr producer,
+  std::optional<model::tx_seq> expected_tx_seq,
   model::timeout_clock::duration timeout) {
     if (!check_tx_permitted()) {
         co_return tx_errc::request_rejected;
     }
 
+    auto pid = producer->id();
     // doesn't make sense to fence off an abort because transaction
     // manager has already decided to abort and acked to a client
     if (!co_await sync(timeout)) {
@@ -571,29 +481,31 @@ ss::future<tx_errc> rm_stm::do_abort_tx(
           _ctx_log.trace,
           "processing name:abort_tx pid:{} tx_seq:{} => stale leader",
           pid,
-          tx_seq.value_or(model::tx_seq(-1)));
+          expected_tx_seq.value_or(model::tx_seq(-1)));
         co_return tx_errc::stale;
     }
     auto synced_term = _insync_term;
     vlog(
       _ctx_log.trace,
-      "processing name:abort_tx pid:{} tx_seq:{} in term:{}",
-      pid,
-      tx_seq.value_or(model::tx_seq(-1)),
+      "processing name:abort_tx producer:{} tx_seq:{} in term:{}",
+      *producer,
+      expected_tx_seq.value_or(model::tx_seq(-1)),
       synced_term);
 
-    if (!is_known_session(pid)) {
+    if (!producer->has_transaction_in_progress()) {
         vlog(
           _ctx_log.trace,
-          "Isn't known tx pid:{} tx_seq:{}, probably already aborted",
-          pid,
-          tx_seq.value_or(model::tx_seq(-1)));
+          "No inprogress transaction for producer: {}, ignoring abort_tx, seq: "
+          "{}",
+          *producer,
+          expected_tx_seq);
         co_return tx_errc::none;
     }
 
-    if (tx_seq) {
-        auto origin = get_abort_origin(pid, tx_seq.value());
+    if (expected_tx_seq) {
+        auto origin = get_abort_origin(producer, expected_tx_seq.value());
         if (origin == abort_origin::past) {
+            // todo (bharathv): rephrase this comment
             // An abort request has older tx_seq. It may mean than the request
             // was dublicated, delayed and retried later.
             //
@@ -614,21 +526,12 @@ ss::future<tx_errc> rm_stm::do_abort_tx(
             //
             // If it happens to be the first case then Redpanda rejects a
             // client's tx.
-            auto expiration_it = _log_state.expiration.find(pid);
-            if (expiration_it != _log_state.expiration.end()) {
-                expiration_it->second.is_expiration_requested = true;
-            }
-            // spawing abort in the background and returning an error to
-            // release locks on the tx coordinator to prevent distributed
-            // deadlock
-            ssx::spawn_with_gate(
-              _gate, [this, pid] { return try_abort_old_tx(pid); });
             vlog(
               _ctx_log.info,
-              "abort_tx request pid:{} tx_seq:{} came from the past => "
+              "abort_tx request producer:{} tx_seq:{} came from the past => "
               "rejecting",
-              pid,
-              tx_seq.value_or(model::tx_seq(-1)));
+              *producer,
+              expected_tx_seq.value_or(model::tx_seq(-1)));
             co_return tx_errc::request_rejected;
         }
         if (origin == abort_origin::future) {
@@ -640,7 +543,7 @@ ss::future<tx_errc> rm_stm::do_abort_tx(
               "Rejecting abort (pid:{}, tx_seq: {}) because it isn't "
               "consistent with the current ongoing transaction",
               pid,
-              tx_seq.value());
+              expected_tx_seq.value());
             co_return tx_errc::request_rejected;
         }
     }
@@ -657,7 +560,7 @@ ss::future<tx_errc> rm_stm::do_abort_tx(
           "Error \"{}\" on replicating pid:{} tx_seq:{} abort batch",
           r.error(),
           pid,
-          tx_seq.value_or(model::tx_seq(-1)));
+          expected_tx_seq.value_or(model::tx_seq(-1)));
         if (_raft->is_leader() && _raft->term() == synced_term) {
             co_await _raft->step_down("abort_tx replication error");
         }
@@ -671,7 +574,7 @@ ss::future<tx_errc> rm_stm::do_abort_tx(
           "timeout on waiting until {} is applied (abort_tx pid:{} tx_seq:{})",
           r.value().last_offset,
           pid,
-          tx_seq.value_or(model::tx_seq(-1)));
+          expected_tx_seq.value_or(model::tx_seq(-1)));
         if (_raft->is_leader() && _raft->term() == synced_term) {
             co_await _raft->step_down("abort_tx apply error");
         }
@@ -723,14 +626,11 @@ ss::future<result<kafka_result>> rm_stm::do_replicate(
     auto holder = _gate.hold();
     auto unit = co_await _state_lock.hold_read_lock();
     if (bid.is_transactional) {
-        auto pid = bid.pid.get_id();
-        auto tx_units = co_await get_tx_lock(pid)->get_units();
         co_return co_await transactional_replicate(bid, std::move(b));
     } else if (bid.is_idempotent()) {
         co_return co_await idempotent_replicate(
           bid, std::move(b), opts, enqueued);
     }
-
     co_return co_await replicate_msg(std::move(b), opts, enqueued);
 }
 
@@ -745,19 +645,9 @@ ss::future<> rm_stm::stop() {
 
 ss::future<> rm_stm::start() { return persisted_stm::start(); }
 
-std::optional<expiration_info>
-rm_stm::get_expiration_info(model::producer_identity pid) const {
-    auto it = _log_state.expiration.find(pid);
-    if (it == _log_state.expiration.end()) {
-        return std::nullopt;
-    }
-
-    return it->second;
-}
-
 std::optional<int32_t>
 rm_stm::get_seq_number(model::producer_identity pid) const {
-    auto it = _producers.find(pid);
+    auto it = _producers.find(pid.get_id());
     if (it == _producers.end()) {
         return std::nullopt;
     }
@@ -769,71 +659,46 @@ ss::future<result<partition_transactions>> rm_stm::get_transactions() {
         co_return errc::not_leader;
     }
     partition_transactions ans;
-    for (auto& [id, offset] : _log_state.ongoing_map) {
+    for (auto& producer : _active_tx_producers) {
+        const auto& tx_state = producer.transaction_state();
+        vassert(
+          tx_state,
+          "Invalid transactional state_tracking for producer: {}",
+          producer);
         partition_transaction_info tx_info;
-        tx_info.lso_bound = offset.first;
-        tx_info.status = offset.last > offset.first
-                           ? partition_transaction_status::ongoing
-                           : partition_transaction_status::initialized;
-        tx_info.info = get_expiration_info(id);
-        tx_info.seq = get_seq_number(id);
-        ans.emplace(id, tx_info);
+        tx_info.lso_bound = tx_state->first;
+        tx_info.status = tx_state->status;
+        tx_info.info = producer.get_expiration_info();
+        tx_info.seq = producer.last_sequence_number();
+        ans.emplace(producer.id(), tx_info);
     }
-
     co_return ans;
 }
 
-void rm_stm::update_tx_offsets(
-  producer_ptr producer, const model::record_batch_header& header) {
-    const auto& pid = producer->id();
-    const auto base_offset = header.base_offset;
-    const auto last_offset = header.last_offset();
-    auto ongoing_it = _log_state.ongoing_map.find(pid);
-    if (ongoing_it != _log_state.ongoing_map.end()) {
-        // transaction already known, update the end offset.
-        if (ongoing_it->second.last < last_offset) {
-            ongoing_it->second.last = last_offset;
-        }
-    } else {
-        // we do no have to check if the value is empty as it is already
-        // done with ongoing map
-        producer->update_current_txn_start_offset(from_log_offset(base_offset));
-
-        _log_state.ongoing_map.emplace(
-          pid, tx_range{.pid = pid, .first = base_offset, .last = last_offset});
-        _log_state.ongoing_set.insert(header.base_offset);
-    }
-}
-
 ss::future<std::error_code> rm_stm::mark_expired(model::producer_identity pid) {
-    return _state_lock.hold_read_lock().then(
-      [this, pid](ss::basic_rwlock<>::holder unit) mutable {
-          return get_tx_lock(pid.get_id())
-            ->with([this, pid]() { return do_mark_expired(pid); })
-            .finally([u = std::move(unit)] {});
-      });
-}
-
-ss::future<std::error_code>
-rm_stm::do_mark_expired(model::producer_identity pid) {
     if (!co_await sync(_sync_timeout)) {
         co_return std::error_code(tx_errc::leader_not_found);
     }
-    if (!is_known_session(pid)) {
-        co_return std::error_code(tx_errc::pid_not_found);
+    auto holder = co_await _state_lock.hold_read_lock();
+    auto producer_it = _producers.find(pid.get_id());
+    if (
+      producer_it == _producers.end()
+      || !producer_it->second->has_transaction_in_progress()) {
+        co_return std::error_code{tx_errc::none};
     }
-
-    // We should delete information about expiration for pid, because inside
-    // try_abort_old_tx it checks is tx expired or not.
-    _log_state.expiration.erase(pid);
-    co_return std::error_code(co_await do_try_abort_old_tx(pid));
+    auto producer = producer_it->second;
+    co_return co_await producer->run_with_lock(
+      [this, producer](ssx::semaphore_units units) {
+          return do_try_abort_old_tx(producer)
+            .then([](tx_errc result) { return std::error_code(result); })
+            .finally([units = std::move(units)] {});
+      });
 }
 
 ss::future<result<kafka_result>> rm_stm::do_sync_and_transactional_replicate(
   producer_ptr producer,
   model::batch_identity bid,
-  model::record_batch_reader rdr,
-  ssx::semaphore_units units) {
+  model::record_batch_reader rdr) {
     if (!co_await sync(_sync_timeout)) {
         vlog(
           _ctx_log.trace,
@@ -853,8 +718,6 @@ ss::future<result<kafka_result>> rm_stm::do_sync_and_transactional_replicate(
           bid.first_seq,
           bid.last_seq);
         if (result.error() == errc::sequence_out_of_order) {
-            // no need to hold while the barrier is in progress.
-            units.return_all();
             auto barrier = co_await _raft->linearizable_barrier();
             if (!barrier) {
                 co_return errc::not_leader;
@@ -873,45 +736,28 @@ ss::future<result<kafka_result>> rm_stm::do_transactional_replicate(
   producer_ptr producer,
   model::batch_identity bid,
   model::record_batch_reader rdr) {
-    // fencing
-    auto fence_it = _log_state.fence_pid_epoch.find(bid.pid.get_id());
-    if (fence_it == _log_state.fence_pid_epoch.end()) {
-        // begin_tx should have set a fence
-        vlog(_ctx_log.warn, "can't find ongoing tx for pid:{}", bid.pid);
-        co_return errc::invalid_producer_epoch;
-    }
-    if (bid.pid.get_epoch() != fence_it->second) {
+    const auto& tx_state = producer->transaction_state();
+    if (!tx_state) {
         vlog(
-          _ctx_log.info, "pid:{} is fenced by {}", bid.pid, fence_it->second);
-        co_return errc::invalid_producer_epoch;
-    }
-
-    if (!_log_state.current_txes.contains(bid.pid)) {
-        vlog(_ctx_log.warn, "can't find ongoing tx for pid:{}", bid.pid);
-        co_return errc::invalid_producer_epoch;
-    }
-    auto it = _log_state.ongoing_map.find(bid.pid);
-    if (it == _log_state.ongoing_map.end()) {
-        // this is a bug and an incorrect state change as a begin is supposed to
-        // update this map and replicate request strictly happens after begin.
-        vlog(
-          _ctx_log.error,
-          "unable to find ongoing transaction for pid: {}",
-          bid.pid);
+          _ctx_log.warn,
+          "No transaction found for producer: {}, request: {}",
+          *producer,
+          bid);
         co_return errc::generic_tx_error;
     }
-    auto tx_seq = _log_state.current_txes[bid.pid].tx_seq;
-    vlog(_ctx_log.trace, "found tx_seq:{} for pid:{}", tx_seq, bid.pid);
+
+    vlog(
+      _ctx_log.trace,
+      "attempt to transactionally replicate batch: {} using producer: {}",
+      bid,
+      *producer);
 
     // For the first batch of a transaction, reset sequence tracking to handle
     // an edge case where client reuses sequence number after an aborted
     // transaction see https://github.com/redpanda-data/redpanda/pull/5026
     // for details
-    const auto& tx = it->second;
-    // Check if the incoming batch is the first data batch.
-    // note: this code is going away soon with move to producer state, will be
-    // refactored with better utilities soon.
-    bool reset_sequence_tracking = tx.first == tx.last;
+    bool reset_sequence_tracking
+      = tx_state->status == tx::partition_transaction_status::initialized;
     auto request = producer->try_emplace_request(
       bid, synced_term, reset_sequence_tracking);
 
@@ -923,15 +769,6 @@ ss::future<result<kafka_result>> rm_stm::do_transactional_replicate(
         co_return co_await req_ptr->result();
     }
     req_ptr->mark_request_in_progress();
-
-    auto expiration_it = _log_state.expiration.find(bid.pid);
-    if (expiration_it == _log_state.expiration.end()) {
-        vlog(_ctx_log.warn, "Can not find expiration info for pid:{}", bid.pid);
-        req_ptr->set_value(errc::generic_tx_error);
-        co_return errc::generic_tx_error;
-    }
-    expiration_it->second.last_update = clock_type::now();
-    expiration_it->second.is_expiration_requested = false;
 
     auto r = co_await _raft->replicate(
       synced_term, std::move(rdr), make_replicate_options());
@@ -966,14 +803,11 @@ ss::future<result<kafka_result>> rm_stm::transactional_replicate(
         co_return errc::generic_tx_error;
     }
     auto producer = maybe_create_producer(bid.pid);
-    co_return co_await producer
-      ->run_with_lock([&](ssx::semaphore_units units) {
-          return do_sync_and_transactional_replicate(
-            producer, bid, std::move(rdr), std::move(units));
-      })
-      .finally([this, producer] {
-          _producer_state_manager.local().touch(*producer, _vcluster_id);
-      });
+    co_return co_await producer->run_with_lock([&](ssx::semaphore_units units) {
+        return do_sync_and_transactional_replicate(
+                 producer, bid, std::move(rdr))
+          .finally([units = std::move(units)] {});
+    });
 }
 
 ss::future<result<kafka_result>> rm_stm::do_sync_and_idempotent_replicate(
@@ -1093,8 +927,8 @@ ss::future<result<kafka_result>> rm_stm::idempotent_replicate(
   ss::lw_shared_ptr<available_promise<>> enqueued) {
     try {
         auto producer = maybe_create_producer(bid.pid);
-        co_return co_await producer
-          ->run_with_lock([&](ssx::semaphore_units units) {
+        co_return co_await producer->run_with_lock(
+          [&](ssx::semaphore_units units) {
               return do_sync_and_idempotent_replicate(
                 producer,
                 bid,
@@ -1102,9 +936,6 @@ ss::future<result<kafka_result>> rm_stm::idempotent_replicate(
                 opts,
                 std::move(enqueued),
                 std::move(units));
-          })
-          .finally([this, producer] {
-              _producer_state_manager.local().touch(*producer, _vcluster_id);
           });
     } catch (const cache_full_error& e) {
         vlog(
@@ -1167,10 +998,14 @@ model::offset rm_stm::last_stable_offset() {
 
     // Check for any in-flight transactions.
     auto first_tx_start = model::offset::max();
-    if (_is_tx_enabled) {
-        if (!_log_state.ongoing_set.empty()) {
-            first_tx_start = *_log_state.ongoing_set.begin();
-        }
+    if (_is_tx_enabled && !_active_tx_producers.empty()) {
+        const auto& earliest_open_tx_producer = _active_tx_producers.begin();
+        const auto& tx_state = earliest_open_tx_producer->transaction_state();
+        vassert(
+          tx_state,
+          "invalid transaction state tracking: {}",
+          *earliest_open_tx_producer);
+        first_tx_start = tx_state->first;
     }
 
     auto synced_leader = _raft->is_leader() && _raft->term() == _insync_term;
@@ -1281,47 +1116,29 @@ ss::future<bool> rm_stm::sync(model::timeout_clock::duration timeout) {
     co_return ready;
 }
 
-void rm_stm::track_tx(
-  model::producer_identity pid,
-  std::chrono::milliseconds transaction_timeout_ms) {
-    if (_gate.is_closed()) {
-        return;
-    }
-    _log_state.expiration[pid] = expiration_info{
-      .timeout = transaction_timeout_ms,
-      .last_update = clock_type::now(),
-      .is_expiration_requested = false};
-    if (!_is_autoabort_enabled) {
-        return;
-    }
-    auto deadline = _log_state.expiration[pid].deadline();
-    try_arm(deadline);
-}
-
 void rm_stm::abort_old_txes() {
     _is_autoabort_active = true;
     ssx::spawn_with_gate(_gate, [this] {
         return _state_lock.hold_read_lock().then(
           [this](ss::basic_rwlock<>::holder unit) mutable {
-              return do_abort_old_txes().finally([this, u = std::move(unit)] {
-                  try_arm(clock_type::now() + _abort_interval_ms);
+              return do_abort_old_txes().finally([this, u = std::move(unit)]() {
+                  maybe_rearm_autoabort_timer(
+                    clock_type::now() + _abort_interval_ms);
               });
           });
     });
 }
 
-chunked_vector<model::producer_identity> rm_stm::get_expired_producers() const {
-    chunked_vector<model::producer_identity> result;
-    auto pids = std::views::keys(_log_state.ongoing_map);
-    std::copy_if(
-      pids.begin(),
-      pids.end(),
-      std::back_inserter(result),
-      [this](const auto& pid) {
-          auto it = _log_state.expiration.find(pid);
-          return it != _log_state.expiration.end()
-                 && it->second.is_expired(clock_type::now());
-      });
+chunked_vector<tx::producer_ptr> rm_stm::get_expired_producers() const {
+    chunked_vector<tx::producer_ptr> result;
+    for (const auto& producer : _active_tx_producers) {
+        auto it = _producers.find(producer.id().get_id());
+        vassert(it != _producers.end(), "No entry in _producers, wtf?");
+        if (producer.has_transaction_expired()) {
+            result.push_back(it->second);
+        }
+    }
+    vlog(_ctx_log.trace, "expired producers: {}", result.size());
     return result;
 }
 
@@ -1331,70 +1148,40 @@ ss::future<> rm_stm::do_abort_old_txes() {
     }
 
     const auto expired = get_expired_producers();
-    for (auto pid : expired) {
-        co_await try_abort_old_tx(pid);
-    }
-
-    std::optional<time_point_type> earliest_deadline;
-    for (auto& [pid, expiration] : _log_state.expiration) {
-        if (!is_known_session(pid)) {
-            continue;
-        }
-        auto candidate = expiration.deadline();
-        if (earliest_deadline) {
-            earliest_deadline = std::min(earliest_deadline.value(), candidate);
-        } else {
-            earliest_deadline = candidate;
-        }
-    }
-
-    if (earliest_deadline) {
-        auto deadline = std::max(
-          earliest_deadline.value(), clock_type::now() + _tx_timeout_delay);
-        try_arm(deadline);
-    }
+    co_await ss::max_concurrent_for_each(
+      expired, 5, [this](const tx::producer_ptr& producer) {
+          return try_abort_old_tx(producer);
+      });
+    // todo: fix rearm logic
 }
 
-ss::future<> rm_stm::try_abort_old_tx(model::producer_identity pid) {
-    return get_tx_lock(pid.get_id())->with([this, pid]() {
-        return do_try_abort_old_tx(pid).discard_result();
-    });
+ss::future<> rm_stm::try_abort_old_tx(producer_ptr producer) {
+    co_await producer->run_with_lock(
+      [this, producer](ssx::semaphore_units units) {
+          return do_try_abort_old_tx(producer).finally(
+            [units = std::move(units)] {});
+      });
 }
 
-ss::future<tx_errc> rm_stm::do_try_abort_old_tx(model::producer_identity pid) {
+ss::future<tx_errc> rm_stm::do_try_abort_old_tx(producer_ptr producer) {
     if (!co_await sync(_sync_timeout)) {
         co_return tx_errc::leader_not_found;
     }
     auto synced_term = _insync_term;
-    if (!is_known_session(pid)) {
-        co_return tx_errc::pid_not_found;
+
+    const auto& tx_state = producer->transaction_state();
+
+    if (!tx_state || !producer->has_transaction_expired()) {
+        co_return tx_errc::stale;
     }
 
-    auto expiration_it = _log_state.expiration.find(pid);
-    if (expiration_it != _log_state.expiration.end()) {
-        if (!expiration_it->second.is_expired(clock_type::now())) {
-            co_return tx_errc::stale;
-        }
-    }
-
-    std::optional<model::tx_seq> tx_seq = get_tx_seq(pid);
-    if (tx_seq) {
-        vlog(_ctx_log.trace, "trying to expire pid:{} tx_seq:{}", pid, tx_seq);
-        // It looks like a partition is fixed now but actually partitioning
-        // of the tx coordinator isn't support yet so it doesn't matter see
-        // https://github.com/redpanda-data/redpanda/issues/6137
-        // In order to support it we ned to update begin_tx to accept the id
-        // and use the true partition_id here
-        auto tx_data = _log_state.current_txes.find(pid);
-        model::partition_id tm_partition{
-          model::partition_id(model::legacy_tm_ntp.tp.partition)};
-        if (tx_data != _log_state.current_txes.end()) {
-            tm_partition = tx_data->second.tm_partition;
-        }
-
+    auto pid = producer->id();
+    model::tx_seq tx_seq = tx_state->sequence;
+    if (tx_seq() >= 0) {
+        vlog(_ctx_log.trace, "trying to expire transaction: {}", *producer);
         auto r = co_await _tx_gateway_frontend.local().route_globally(
           cluster::try_abort_request(
-            tm_partition, pid, tx_seq.value(), _sync_timeout));
+            tx_state->coordinator_partition, pid, tx_seq, _sync_timeout));
         if (r.ec == tx_errc::none) {
             if (r.commited) {
                 vlog(
@@ -1467,9 +1254,8 @@ ss::future<tx_errc> rm_stm::do_try_abort_old_tx(model::producer_identity pid) {
                     vlog(
                       _ctx_log.warn,
                       "Timed out on waiting for the abort marker to be applied "
-                      "pid:{} tx_seq:{}",
-                      pid,
-                      tx_seq);
+                      "for transaction: {}",
+                      *producer);
                     if (_raft->is_leader() && _raft->term() == synced_term) {
                         co_await _raft->step_down(
                           "try_abort(abort) apply error");
@@ -1483,17 +1269,16 @@ ss::future<tx_errc> rm_stm::do_try_abort_old_tx(model::producer_identity pid) {
         } else {
             vlog(
               _ctx_log.warn,
-              "state of pid:{} tx_seq:{} is unknown:{}",
-              pid,
-              tx_seq,
+              "state of transaction {} is unknown:{}",
+              *producer,
               r.ec);
             co_return tx_errc::timeout;
         }
     } else {
         vlog(
           _ctx_log.error,
-          "Can not find tx_seq for pid({}) to expire old tx",
-          pid);
+          "Invalid sequence number for transaction: {}, force expiring",
+          *producer);
         auto batch = make_tx_control_batch(
           pid, model::control_record_type::tx_abort);
 
@@ -1527,12 +1312,11 @@ ss::future<tx_errc> rm_stm::do_try_abort_old_tx(model::producer_identity pid) {
             }
             co_return tx_errc::timeout;
         }
-
         co_return tx_errc::none;
     }
 }
 
-void rm_stm::try_arm(time_point_type deadline) {
+void rm_stm::maybe_rearm_autoabort_timer(time_point_type deadline) {
     if (auto_abort_timer.armed() && auto_abort_timer.get_timeout() > deadline) {
         auto_abort_timer.cancel();
         auto_abort_timer.arm(deadline);
@@ -1543,36 +1327,22 @@ void rm_stm::try_arm(time_point_type deadline) {
 
 void rm_stm::apply_fence(model::producer_identity pid, model::record_batch b) {
     auto producer = maybe_create_producer(pid);
-    auto batch_base_offset = b.base_offset();
     auto header = b.header();
     auto batch_data = read_fence_batch(std::move(b));
     vlog(
       _ctx_log.trace,
       "applying fence batch, offset: {}, pid: {}",
-      batch_base_offset,
+      b.base_offset(),
       batch_data.bid.pid);
-
+    producer->apply_transaction_begin(header, batch_data);
     _highest_producer_id = std::max(
       _highest_producer_id, batch_data.bid.pid.get_id());
-    auto [fence_it, _] = _log_state.fence_pid_epoch.try_emplace(
-      batch_data.bid.pid.get_id(), batch_data.bid.pid.get_epoch());
-    update_tx_offsets(producer, header);
-    // using less-or-equal to update tx_seqs on every transaction
-    if (fence_it->second <= batch_data.bid.pid.get_epoch()) {
-        fence_it->second = batch_data.bid.pid.get_epoch();
-        if (batch_data.tx_seq.has_value()) {
-            _log_state.current_txes[batch_data.bid.pid] = tx_data{
-              batch_data.tx_seq.value(), batch_data.tm};
-        }
-        if (batch_data.transaction_timeout_ms.has_value()) {
-            // with switching to log_state an active transaction may
-            // survive leadership and we need to start tracking it on
-            // the new leader so we can't rely on the begin_tx initi-
-            // -ated tracking and need to do it from apply
-            track_tx(
-              batch_data.bid.pid, batch_data.transaction_timeout_ms.value());
-        }
+    if (batch_data.transaction_timeout_ms.has_value()) {
+        maybe_rearm_autoabort_timer(
+          clock_type::now() + batch_data.transaction_timeout_ms.value());
     }
+    _active_tx_producers.push_back(*producer);
+    _producer_state_manager.local().touch(*producer, _vcluster_id);
 }
 
 ss::future<> rm_stm::apply(const model::record_batch& b) {
@@ -1602,7 +1372,6 @@ ss::future<> rm_stm::apply(const model::record_batch& b) {
     if (_is_autoabort_enabled && !_is_autoabort_active) {
         abort_old_txes();
     }
-
     co_return;
 }
 
@@ -1610,50 +1379,35 @@ void rm_stm::apply_control(
   model::producer_identity pid, model::control_record_type crt) {
     vlog(
       _ctx_log.trace, "applying control batch of type {}, pid: {}", crt, pid);
-    // either epoch is the same as fencing or it's lesser in the latter
-    // case we don't fence off aborts and commits because transactional
-    // manager already decided a tx's outcome and acked it to the client
     auto producer = maybe_create_producer(pid);
-
-    if (likely(
-          crt == model::control_record_type::tx_abort
-          || crt == model::control_record_type::tx_commit)) {
-        /**
-         * Transaction is finished, update producer tx start offset
-         */
-        producer->update_current_txn_start_offset(std::nullopt);
-    }
-
-    // there are only two types of control batches
-    if (crt == model::control_record_type::tx_abort) {
-        _highest_producer_id = std::max(_highest_producer_id, pid.get_id());
-        _log_state.current_txes.erase(pid);
-        auto offset_it = _log_state.ongoing_map.find(pid);
-        if (offset_it != _log_state.ongoing_map.end()) {
-            // make a list
-            _log_state.aborted.push_back(offset_it->second);
-            _log_state.ongoing_set.erase(offset_it->second.first);
-            _log_state.ongoing_map.erase(pid);
-        }
-
-        _log_state.expiration.erase(pid);
-
+    auto tx_range = producer->apply_transaction_end(crt);
+    if (tx_range && crt == model::control_record_type::tx_abort) {
+        // Aborted transaction
+        vlog(
+          _ctx_log.trace,
+          "Adding aborted transaction range: {}",
+          tx_range.value());
+        _log_state.aborted.push_back(tx_range.value());
         if (
           _log_state.aborted.size() > _abort_index_segment_size
           && !_is_abort_idx_reduction_requested) {
             ssx::spawn_with_gate(
               _gate, [this] { return reduce_aborted_list(); });
         }
-    } else if (crt == model::control_record_type::tx_commit) {
-        _highest_producer_id = std::max(_highest_producer_id, pid.get_id());
-        _log_state.current_txes.erase(pid);
-        auto offset_it = _log_state.ongoing_map.find(pid);
-        if (offset_it != _log_state.ongoing_map.end()) {
-            _log_state.ongoing_set.erase(offset_it->second.first);
-            _log_state.ongoing_map.erase(pid);
-        }
-        _log_state.expiration.erase(pid);
     }
+    _producer_state_manager.local().touch(*producer, _vcluster_id);
+    if (producer->_active_transaction_hook.is_linked()) {
+        // the producer may be unlinked if only the abort batch is retained
+        // from the transaction and everything else got truncated.
+        auto it = _active_tx_producers.iterator_to(*producer);
+        vassert(
+          it != _active_tx_producers.end(),
+          "Invalid transacation state tracking, {} is not in active producers "
+          "list",
+          *producer);
+        _active_tx_producers.erase(it);
+    }
+    _highest_producer_id = std::max(_highest_producer_id, pid.get_id());
 }
 
 ss::future<> rm_stm::reduce_aborted_list() {
@@ -1676,17 +1430,11 @@ void rm_stm::apply_data(
         auto producer = maybe_create_producer(bid.pid);
         producer->apply_data(header, last_kafka_offset);
         _producer_state_manager.local().touch(*producer, _vcluster_id);
-
-        if (bid.is_transactional) {
-            vlog(
-              _ctx_log.trace,
-              "Applying tx data batch with identity: {} and offset range: "
-              "[{},{}], last kafka offset: {}",
-              bid,
-              header.base_offset,
-              header.last_offset(),
-              last_kafka_offset);
-            update_tx_offsets(producer, header);
+        if (
+          bid.is_transactional
+          && !producer->_active_transaction_hook.is_linked()) {
+            // This can happen if the begin batch was prefix truncated.
+            _active_tx_producers.push_back(*producer);
         }
     }
 }
@@ -1767,7 +1515,7 @@ rm_stm::apply_local_snapshot(raft::stm_snapshot_header hdr, iobuf&& tx_ss_buf) {
         try {
             _producer_state_manager.local().register_producer(
               *producer, _vcluster_id);
-            _producers.emplace(pid, producer);
+            _producers.emplace(pid.get_id(), producer);
         } catch (const cache_full_error& e) {
             vlog(
               _ctx_log.warn,
@@ -2112,7 +1860,7 @@ ss::future<> rm_stm::apply_raft_snapshot(const iobuf&) {
       _ctx_log.info,
       "Resetting all state, reason: log eviction, offset: {}",
       _raft->start_offset());
-    _log_state.reset();
+    _log_state = {};
     co_await reset_producers();
     set_next(_raft->start_offset());
     co_return;
@@ -2159,16 +1907,8 @@ void rm_stm::setup_metrics() {
           sm::description(
             "Number of active producers (known producer_id seq number pairs)."),
           labels),
-        sm::make_gauge(
-          "tx_num_inflight_requests",
-          [this] { return _log_state.ongoing_map.size(); },
-          sm::description("Number of ongoing transactional requests."),
-          labels),
-        sm::make_gauge(
-          "tx_mem_tracker_consumption_bytes",
-          [this] { return _tx_root_tracker.consumption(); },
-          sm::description("Total memory bytes in use by tx subsystem."),
-          labels),
+        // todo: implement an inflight transactions counter
+        // _active_tx_list is not count optimized.
       },
       {},
       {sm::shard_label, partition_label});
