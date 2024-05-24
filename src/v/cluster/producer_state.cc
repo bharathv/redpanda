@@ -204,16 +204,17 @@ producer_state::producer_state(
   ss::noncopyable_function<void()> post_eviction_hook,
   producer_state_snapshot snapshot) noexcept
   : _logger(logger)
-  , _id(snapshot._id)
-  , _group(snapshot._group)
+  , _id(snapshot.id)
+  , _group(snapshot.group)
+  , _transaction_state(std::move(snapshot.transaction_state))
   , _post_eviction_hook(std::move(post_eviction_hook)) {
     // Hydrate from snapshot.
-    for (auto& req : snapshot._finished_requests) {
+    for (auto& req : snapshot.finished_requests) {
         result_promise_t ready{};
-        ready.set_value(kafka_result{req._last_offset});
+        ready.set_value(kafka_result{req.last_offset});
         _requests._finished_requests.push_back(ss::make_lw_shared<request>(
-          req._first_sequence,
-          req._last_sequence,
+          req.first_sequence,
+          req.last_sequence,
           model::term_id{-1},
           std::move(ready)));
     }
@@ -379,10 +380,7 @@ producer_state::apply_transaction_end(model::control_record_type crt) {
 
     vlog(_logger.trace, "[{}] Applying record: {}", *this, crt);
     auto final_tx_state = std::exchange(_transaction_state, std::nullopt);
-    return model::tx_range{
-      .pid = id(),
-      .first = final_tx_state->first,
-      .last = final_tx_state->last};
+    return model::tx_range{id(), final_tx_state->first, final_tx_state->last};
 }
 
 std::optional<seq_t> producer_state::last_sequence_number() const {
@@ -409,10 +407,10 @@ bool producer_state::has_transaction_expired() const {
 producer_state_snapshot
 producer_state::snapshot(kafka::offset log_start_offset) const {
     producer_state_snapshot snapshot;
-    snapshot._id = _id;
-    snapshot._group = _group;
-    snapshot._ms_since_last_update = ms_since_last_update();
-    snapshot._finished_requests.reserve(_requests._finished_requests.size());
+    snapshot.id = _id;
+    snapshot.group = _group;
+    snapshot.ms_since_last_update = ms_since_last_update();
+    snapshot.finished_requests.reserve(_requests._finished_requests.size());
     for (auto& req : _requests._finished_requests) {
         vassert(
           req->has_completed(),
@@ -424,13 +422,11 @@ producer_state::snapshot(kafka::offset log_start_offset) const {
           = req->_result.get_shared_future().get().value().last_offset;
         // offsets older than log start are no longer interesting.
         if (kafka_offset >= log_start_offset) {
-            snapshot._finished_requests.push_back(
-              producer_state_snapshot::finished_request{
-                ._first_sequence = req->_first_sequence,
-                ._last_sequence = req->_last_sequence,
-                ._last_offset = kafka_offset});
+            snapshot.finished_requests.emplace_back(
+              req->_first_sequence, req->_last_sequence, kafka_offset);
         }
     }
+    snapshot.transaction_state = _transaction_state;
     return snapshot;
 }
 

@@ -763,14 +763,14 @@ cluster::tx::tx_snapshot_v4 make_tx_snapshot_v4() {
         cluster::random_expiration_snapshot)};
 }
 
-cluster::tx::tx_snapshot make_tx_snapshot_v5() {
+cluster::tx::tx_snapshot_v5 make_tx_snapshot_v5() {
     auto producers = tests::random_frag_vector(
       tests::random_producer_state, 50, ctx_logger);
     fragmented_vector<cluster::tx::producer_state_snapshot> snapshots;
     for (auto producer : producers) {
         snapshots.push_back(producer->snapshot(kafka::offset{0}));
     }
-    cluster::tx::tx_snapshot snap;
+    cluster::tx::tx_snapshot_v5 snap;
     snap.offset = model::random_offset();
     snap.producers = std::move(snapshots),
     snap.fenced = tests::random_frag_vector(model::random_producer_identity),
@@ -822,7 +822,7 @@ FIXTURE_TEST(test_snapshot_v4_v5_equivalence, rm_stm_test_fixture) {
     auto snap_v4_bytes
       = local_snapshot(cluster::tx::tx_snapshot_v4::version).get0();
     auto snap_v5_bytes
-      = local_snapshot(cluster::tx::tx_snapshot::version).get0();
+      = local_snapshot(cluster::tx::tx_snapshot_v5::version).get0();
 
     iobuf_parser v4_parser(std::move(snap_v4_bytes.data));
     iobuf_parser v5_parser(std::move(snap_v5_bytes.data));
@@ -840,12 +840,12 @@ FIXTURE_TEST(test_snapshot_v4_v5_equivalence, rm_stm_test_fixture) {
           snap_v5.producers.begin(),
           snap_v5.producers.end(),
           [&](const cluster::tx::producer_state_snapshot& producer) {
-              auto& back = producer._finished_requests.back();
-              return producer._id == seq_entry.pid
-                     && seq_entry.last_offset == back._last_offset
-                     && seq_entry.seq == back._last_sequence
+              auto& back = producer.finished_requests.back();
+              return producer.id == seq_entry.pid
+                     && seq_entry.last_offset == back.last_offset
+                     && seq_entry.seq == back.last_sequence
                      && seq_entry.seq_cache.size()
-                          == producer._finished_requests.size();
+                          == producer.finished_requests.size();
           });
         BOOST_REQUIRE(match != snap_v5.producers.end());
     }

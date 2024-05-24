@@ -11,6 +11,8 @@
 
 #include "model/record.h"
 
+#include "reflection/async_adl.h"
+
 namespace model {
 
 bool record_batch_iterator::has_next() const noexcept {
