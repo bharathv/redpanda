@@ -433,4 +433,33 @@ producer_state::snapshot(kafka::offset log_start_offset) const {
     return snapshot;
 }
 
+std::optional<model::tx_seq> producer_state::get_transaction_sequence() const {
+    if (_transaction_state) {
+        return _transaction_state->sequence;
+    }
+    return std::nullopt;
+}
+
+std::optional<model::offset>
+producer_state::get_current_tx_start_offset() const {
+    if (_transaction_state) {
+        return _transaction_state->first;
+    }
+    return std::nullopt;
+}
+
+std::optional<expiration_info> producer_state::get_expiration_info() const {
+    if (!_transaction_state) {
+        return std::nullopt;
+    }
+    auto duration = std::chrono::duration_cast<clock_type::duration>(
+      ms_since_last_update());
+    auto timeout = std::chrono::duration_cast<clock_type::duration>(
+      _transaction_state->timeout.value_or(std::chrono::milliseconds::max()));
+    return expiration_info{
+      .timeout = timeout,
+      .last_update = tx::clock_type::now() - duration,
+      .is_expiration_requested = has_transaction_expired()};
+}
+
 } // namespace cluster::tx

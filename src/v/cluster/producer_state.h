@@ -211,15 +211,7 @@ public:
         return model::timestamp(_last_updated_ts.time_since_epoch() / 1ms);
     }
 
-    std::optional<kafka::offset> current_txn_start_offset() const {
-        return _current_txn_start_offset;
-    }
-
     model::producer_identity id() const { return _id; }
-
-    void update_current_txn_start_offset(std::optional<kafka::offset> offset) {
-        _current_txn_start_offset = offset;
-    }
 
     void gc_requests_from_older_terms(model::term_id current_term) {
         _requests.gc_requests_from_older_terms(current_term);
@@ -234,11 +226,17 @@ public:
         return _transaction_state;
     }
 
+    std::optional<model::offset> get_current_tx_start_offset() const;
+
+    std::optional<model::tx_seq> get_transaction_sequence() const;
+
     // Returns true if there is an open transaction _and_ if it
     // has expired.
     bool has_transaction_expired() const;
 
     void force_transaction_expiry() { _force_transaction_expiry = true; }
+
+    std::optional<expiration_info> get_expiration_info() const;
 
     // Used to track all active producers on a shard (across all the
     // partitions).
@@ -277,7 +275,6 @@ private:
     bool _force_transaction_expiry{false};
     bool _evicted = false;
     ss::noncopyable_function<void()> _post_eviction_hook;
-    std::optional<kafka::offset> _current_txn_start_offset;
     friend class producer_state_manager;
     friend struct ::test_fixture;
 };
