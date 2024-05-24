@@ -103,6 +103,8 @@ std::string_view to_string_view(feature f) {
         return "cluster_topic_manifest_format_v2";
     case feature::shard_placement_persistence:
         return "shard_placement_persistence";
+    case feature::tx_log_state_revamp:
+        return "tx_log_state_revamp";
 
     /*
      * testing features
