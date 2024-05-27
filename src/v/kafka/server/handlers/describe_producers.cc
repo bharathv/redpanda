@@ -66,16 +66,20 @@ do_get_producers_for_partition(cluster::partition_manager& pm, model::ktp ntp) {
     resp.partition_index = ntp.get_partition();
     resp.active_producers.reserve(producers.size());
     for (const auto& [pid, state] : producers) {
-        auto tx_start = state->get_current_tx_start_offset().value_or(
-          model::offset{-1});
+        auto tx_start = state->get_current_tx_start_offset();
+        auto kafka_tx_start = -1;
+        if (tx_start) {
+            kafka_tx_start = partition->log()->from_log_offset(
+              tx_start.value());
+        }
         resp.active_producers.push_back(producer_state{
           .producer_id = pid,
           .producer_epoch = state->id().get_epoch(),
           .last_sequence = state->last_sequence_number().value_or(-1),
           .last_timestamp = state->last_update_timestamp().value(),
           .coordinator_epoch = -1,
-          .current_txn_start_offset = partition->log()->from_log_offset(
-            tx_start)});
+          .current_txn_start_offset = kafka_tx_start,
+        });
     }
     return resp;
 }
