@@ -1807,8 +1807,11 @@ void rm_stm::setup_metrics() {
           sm::description(
             "Number of active producers (known producer_id seq number pairs)."),
           labels),
-        // todo: implement an inflight transactions counter
-        // _active_tx_list is not count optimized.
+        sm::make_gauge(
+          "tx_num_inflight_requests",
+          [this] { return _active_tx_producers.size(); },
+          sm::description("Number of ongoing transactional requests."),
+          labels),
       },
       {},
       {sm::shard_label, partition_label});

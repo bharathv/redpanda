@@ -328,7 +328,7 @@ private:
     // the first entry in the list is the earliest open transaction
     // on the partition. This property is used to efficiently compute
     // the LSO without having traverse the whole list.
-    using active_transactional_producers_t = uncounted_intrusive_list<
+    using active_transactional_producers_t = counted_intrusive_list<
       tx::producer_state,
       &tx::producer_state::_active_transaction_hook>;
     active_transactional_producers_t _active_tx_producers;
