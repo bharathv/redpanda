@@ -192,12 +192,14 @@ model::record_batch make_tx_batch(
 }
 
 model::record_batch make_tx_fence_batch(
-  const model::producer_identity& pid, group_tx::fence_metadata cmd) {
+  const model::producer_identity& pid,
+  group_tx::fence_metadata cmd,
+  bool use_new_fence_batch_type) {
+    auto batch_type = use_new_fence_batch_type
+                        ? model::record_batch_type::group_fence_tx
+                        : model::record_batch_type::tx_fence;
     return make_tx_batch(
-      model::record_batch_type::tx_fence,
-      group::fence_control_record_version,
-      pid,
-      std::move(cmd));
+      batch_type, group::fence_control_record_version, pid, std::move(cmd));
 }
 } // namespace
 
@@ -1880,7 +1882,8 @@ group::begin_tx(cluster::begin_group_tx_request r) {
       .tx_seq = r.tx_seq,
       .transaction_timeout_ms = r.timeout,
       .tm_partition = r.tm_partition};
-    model::record_batch batch = make_tx_fence_batch(r.pid, std::move(fence));
+    model::record_batch batch = make_tx_fence_batch(
+      r.pid, std::move(fence), use_new_fence_batch_type());
     auto reader = model::make_memory_record_batch_reader(std::move(batch));
     auto res = co_await _partition->raft()->replicate(
       _term,

@@ -50,6 +50,7 @@ enum class record_batch_type : int8_t {
     = 29, // place holder for last batch in a segment that was aborted
     role_management_cmd = 30, // role management command
     client_quota = 31,        // client quota command
+    group_fence_tx = 32,      // fence batch in group transactions
     MAX = client_quota,
 };
 

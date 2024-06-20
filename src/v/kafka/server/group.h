@@ -880,6 +880,11 @@ private:
     std::vector<model::topic_partition>
     get_expired_offsets(std::chrono::seconds retention_period);
 
+    bool use_new_fence_batch_type() const {
+        return _feature_table.local().is_active(
+          features::feature::group_fence_batch_type_switch);
+    }
+
     kafka::group_id _id;
     group_state _state;
     std::optional<model::timestamp> _state_timestamp;
