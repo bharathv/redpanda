@@ -412,7 +412,7 @@ class StreamVerifier():
                  worker_threads: int,
                  rate=0,
                  total_messages=100):
-        # Remove quotes if any
+        # Create core logger
         self.logger = setup_logger(LOGGER_CORE)
         # Remove quotes from broker config value if an
         self.brokers = brokers.strip('\"').strip("'")
@@ -425,7 +425,7 @@ class StreamVerifier():
         # total messages to process in all topics
         self.total_messages = total_messages
         self.workers = worker_threads
-        # Annoucement of dynamic vars
+        # Announcement of dynamic vars
         self.topics_status = {}
         self.topics = {}
         self.id_index = 0
@@ -899,13 +899,11 @@ class StreamVerifier():
                 and high_watermarks[p.partition] <= p.offset
             }
 
-            # Logging every check is turned off
-            # self._logger.debug(
-            #     f"[{topic.transaction_id}] Topic {self._src_topic} "
-            #     f"partitions high watermarks {high_watermarks}, "
-            #     f"assignment: {assignments} positions: {positions}, "
-            #     f"end_for: {end_for}"
-            # )
+            self.logger.debug(
+                f"[{topic.transaction_id}] Topic {topic.source_topic_name} "
+                f"partitions high watermarks {high_watermarks}, "
+                f"assignment: {assignments} positions: {positions}, "
+                f"end_for: {end_for}")
 
             topic.partitions_eof |= end_for
             consumers = self.consumer_count
@@ -988,6 +986,8 @@ class StreamVerifier():
                 # This way partition end offset check is very slow.
                 # Instead, we are using EOF + timeout to speed things up.
                 # But code left intact in case if this is needed in future
+                # PS: Will be cleaned up after tests for this module
+                # is created and tested
 
                 # if reached_end():
                 #     logger.debug(f"{topic.transaction_id} reached end")
@@ -1266,20 +1266,20 @@ class StreamVerifierConsume(StreamVerifierWeb):
         if not self._validate_request(topics_cfg_keys, forbidden, req, resp):
             # response is already populated inside validate_request
             return
-        else:
-            # Update topic configs
-            if 'topic_prefix_consume' in req.media:
-                self.workload_config.topic_prefix_consume = req.media[
-                    'topic_prefix_consume']
-            if 'topic_count' in req.media:
-                self.workload_config.topic_count = req.media['topic_count']
-            # start consumers
-            self.init_consumers()
-            self.consume(wait=False)
 
-            resp.status = falcon.HTTP_200
-            resp.content_type = falcon.MEDIA_JSON
-            resp.media = {'result': "OK"}
+        # Update topic configs
+        if 'topic_prefix_consume' in req.media:
+            self.workload_config.topic_prefix_consume = req.media[
+                'topic_prefix_consume']
+        if 'topic_count' in req.media:
+            self.workload_config.topic_count = req.media['topic_count']
+        # start consumers
+        self.init_consumers()
+        self.consume(wait=False)
+
+        resp.status = falcon.HTTP_200
+        resp.content_type = falcon.MEDIA_JSON
+        resp.media = {'result': "OK"}
 
 
 class StreamVerifierAtomic(StreamVerifierWeb):
