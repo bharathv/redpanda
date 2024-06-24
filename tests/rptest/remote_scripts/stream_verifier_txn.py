@@ -32,6 +32,8 @@ title = f"{app_name}, python transaction verifier worker"
 log_level = logging.INFO
 LOGGER_STARTUP = 'startup'
 LOGGER_MAIN = 'main'
+LOGGER_CORE = 'core'
+LOGGER_CLI_COMMAND = 'cli_command'
 LOGGER_WEB_PRODUCE = "web_produce"
 LOGGER_WEB_CONSUME = "web_consume"
 
@@ -233,7 +235,7 @@ class AppCfg(Updateable):
             resp.media_type = falcon.MEDIA_JSON
             resp.media = {"errors": msg}
         else:
-            # since validation is passed, no more stric checking needed
+            # since validation is passed, no more strict checking needed
             self.update(req.media)
             logger.debug(f"...updated app config: {vars(self)}")
             resp.status = falcon.HTTP_200
@@ -411,7 +413,7 @@ class StreamVerifier():
                  rate=0,
                  total_messages=100):
         # Remove quotes if any
-        self.logger = setup_logger('core')
+        self.logger = setup_logger(LOGGER_CORE)
         # Remove quotes from broker config value if an
         self.brokers = brokers.strip('\"').strip("'")
         # Create main topics config
@@ -651,7 +653,7 @@ class StreamVerifier():
     # Consume functions
     #
     def init_consumers(self):
-        """Precreates topic status lists for Cosuming thread.
+        """Precreates topic status lists for Consuming thread.
         One Consumer per worker thread.
         """
         self.logger.info("Initializing consumers")
@@ -1398,7 +1400,7 @@ commands = [COMMAND_PRODUCE, COMMAND_ATOMIC, COMMAND_CONSUME]
 
 def process_command(command, cfg, ioclass):
     try:
-        logger = setup_logger('cli_command')
+        logger = setup_logger(LOGGER_CLI_COMMAND)
         verifier = StreamVerifier(cfg.brokers,
                                   cfg.workload_config,
                                   cfg.worker_threads,
