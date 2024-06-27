@@ -12,6 +12,7 @@ import confluent_kafka as ck
 import falcon
 import json
 import logging
+import numpy as np
 import signal
 import string
 import sys
@@ -22,6 +23,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
 from itertools import repeat
+from functools import partial
 from time import sleep
 from typing import Generator, IO, Tuple
 from wsgiref.simple_server import make_server
@@ -45,6 +47,18 @@ CONSUME_STOP_CONTINUOUS = "continuous"
 consume_stop_options = [
     CONSUME_STOP_EOF, CONSUME_STOP_SLEEP, CONSUME_STOP_CONTINUOUS
 ]
+
+
+# Class to serialize int64
+class NpEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super(NpEncoder, self).default(obj)
 
 
 def setup_logger(child_logger_name: str = "",
@@ -129,15 +143,21 @@ class AppCfg(Updateable):
     msg_per_txn: int = 1
     # per-topic = msg_total / topic_count
     msg_total: int = 256
+    # Flag to use transactions for single produce job
+    use_txn_on_produce: bool = False
+    # Amount of errors in topic before removing it from processing
+    topic_error_threshold: int = 1
     # When consume will stop processing
     # eof - on discovering partition EOF
     # sleep - when there is no new messages after sleep time
     # continuous - exit only on terminate signal
     consume_stop_criteria: str = "sleep"
     # how much time to wait in a loop for next message, sec
-    consume_timeout_s: int = 10
+    consume_timeout_s: int = 60
     # Timeout for poll operation
     consume_poll_timeout: int = 5
+    # How much messages to consume before moving to other thread
+    consume_count_per_thread: int = 1024
     # if no messages received after 2 min
     # Just exit consume operation
     consume_sleep_time_s: int = 60
@@ -320,6 +340,8 @@ class TopicStatus(Updateable):
     processed_count: int
     # list of partitions ids that finished producing messages
     partitions_eof: set
+    # timestamp for first message in batch
+    first_message_ts: float
     # timestamp for last message
     last_message_ts: float
     # how much ms should pass between messages to be sent
@@ -336,6 +358,10 @@ class TopicStatus(Updateable):
     # Termination signalling flag
     # It is simpler that threading event and faster
     terminate: bool
+    # if errors happen during produce/send track them here
+    errors: list[str]
+    # list of tuples, first, last, processed count
+    msgs_timings: list
 
     @property
     def transaction_id(self):
@@ -361,6 +387,10 @@ class MessageTransforms:
         """
         active_number = ""
         new_value = ""
+        if isinstance(src_key, bytes):
+            src_key = src_key.decode('utf-8')
+        if isinstance(src_value, bytes):
+            src_value = src_value.decode('utf-8')
         for char in src_value:
             if char in string.digits:
                 active_number += char
@@ -375,10 +405,6 @@ class MessageTransforms:
             new_int = int(active_number)
             new_value += str(new_int)
         return src_key, new_value
-
-    @staticmethod
-    def deserialize(value: bytes, ctx) -> str:
-        return value.decode("utf-8")
 
 
 class MessageGenerator:
@@ -428,13 +454,19 @@ class StreamVerifier():
         # Announcement of dynamic vars
         self.topics_status = {}
         self.topics = {}
-        self.id_index = 0
+        self._topic_id_template = datetime.strftime(datetime.now(),
+                                                    "%y%m%d%H%M%S")
+        self._topic_id_index = 0
         self.produce_thread = None
         self.consume_thread = None
         self.atomic_thread = None
         self.delivery_reports = {}
         self.consumer_count = 0
-        self._lock = threading.Lock()
+
+    @property
+    def topic_id(self):
+        self._topic_id_index += 1
+        return f"{self._topic_id_template}-{self._topic_id_index:05}"
 
     @staticmethod
     def ensure_message_rate(rate_ms: float, last_message_ts: float,
@@ -458,14 +490,36 @@ class StreamVerifier():
         pool = ThreadPoolExecutor(workers, "stream_worker")
         msgs_processed = 0
         last_message_count = 0
+        topic_queue = list(topics.values())
+        error_topics = []
         # Message processing loop
-        while msgs_processed < total_messages:
+        while msgs_processed < total_messages or total_messages < 0:
             # Get processed message count from worker threads
-            for topic_status in pool.map(func, repeat(logger),
-                                         list(topics.values())):
+            for topic_status in pool.map(func, repeat(logger), topic_queue):
                 msgs_processed += topic_status.processed_count
+                # Save timings for future calculations
+                # Strictly do not calculate anything here as this
+                # will slow down everything tremendously
+                topic_status.msgs_timings.append((
+                    topic_status.first_message_ts,
+                    topic_status.last_message_ts,
+                    topic_status.processed_count,
+                ))
                 topic_status.processed_count = 0
-
+            # Check for errors and remove topic from queue if any
+            idx = 0
+            while idx < len(topic_queue):
+                if len(topic_queue[idx].errors
+                       ) > app_config.topic_error_threshold:
+                    logger.warning(f"Topic {topic_queue[idx].id} removed "
+                                   "from processing queue")
+                    error_topics.append(topic_queue[idx])
+                    topic_queue.pop(idx)
+                else:
+                    idx += 1
+            if len(topic_queue) < 1:
+                logger.warning("No more topics to process")
+                break
             # Check EOF flag and break out if all set
             if all([t.reached_eof for t in topics.values()]):
                 logger.info('All topics reached EOF')
@@ -529,7 +583,7 @@ class StreamVerifier():
                              f"with the total of {self.total_messages}")
         for name in self.workload_config.topic_names_produce:
             topic_config = {
-                "id": self.id_index,
+                "id": self.topic_id,
                 # For produce only mode just set them to the same value
                 "source_topic_name": name,
                 "target_topic_name": name,
@@ -538,20 +592,26 @@ class StreamVerifier():
                 "index": 0,
                 "processed_count": 0,
                 "partitions_eof": set(),
+                "first_message_ts": datetime.now().timestamp(),
                 "last_message_ts": datetime.now().timestamp(),
                 "msgs_rate_ms": self.msgs_rate_ms,
                 "consume_timeout_s": app_config.consume_timeout_s,
                 "producer": None,
                 "consumer_config": {},
                 "reached_eof": False,
-                "terminate": False
+                "terminate": False,
+                "errors": [],
+                "msgs_timings": []
             }
             t = TopicStatus(**topic_config)
-            t.producer = ck.Producer({
-                'bootstrap.servers': self.brokers,
-                'transactional.id': t.transaction_id
-            })
-            t.producer.init_transactions()
+            if app_config.use_txn_on_produce:
+                t.producer = ck.Producer({
+                    'bootstrap.servers': self.brokers,
+                    'transactional.id': t.transaction_id
+                })
+                t.producer.init_transactions()
+            else:
+                t.producer = ck.Producer({'bootstrap.servers': self.brokers})
             self.topics[t.target_topic_name] = t
 
     #
@@ -565,11 +625,62 @@ class StreamVerifier():
             Defaults to True.
         """
         self.logger.info("Start of sending messages")
+        func = self._async_send_messages
+        if app_config.use_txn_on_produce:
+            func = self._send_transaction
         self.produce_thread = self.create_thread(
-            self._send_transaction, thread_name="stream_produce_thread")
+            func, thread_name="stream_produce_thread")
         if wait:
             self.produce_thread.join()
         return
+
+    @staticmethod
+    def _async_send_messages(logger: logging.Logger,
+                             topic: TopicStatus) -> TopicStatus:
+        # Thread safe function to send messages as fast as possible
+        def ensure_message_rate(rate_ms: float, last_message_ts: float,
+                                logger: logging.Logger):
+            def time_since_last_msg() -> int:
+                diff_ms = datetime.now().timestamp() - last_message_ts
+                return int(diff_ms * 1000)
+
+            # Handle message rate
+            if rate_ms > 0:
+                _time_since = time_since_last_msg()
+                if _time_since < rate_ms:
+                    wait_time = (rate_ms - _time_since) / 1000
+                    logger.debug(
+                        f"...waiting {wait_time}s before sending message")
+                    sleep(wait_time)
+
+        topic.first_message_ts = datetime.now().timestamp()
+        msg_gen = MessageGenerator()
+        for key, value in msg_gen.gen_indexed_messages(
+                topic.index, topic.msgs_per_transaction):
+            # Handle message rate
+            ensure_message_rate(topic.msgs_rate_ms, topic.last_message_ts,
+                                logger)
+
+            # Async message sending
+            try:
+                topic.producer.produce(topic.target_topic_name,
+                                       key=key,
+                                       value=value)
+                topic.index += 1
+                topic.processed_count += 1
+            except ck.KafkaException as e:
+                logger.warning(e)
+                topic.errors.append(e)
+
+            # save time for this message
+            topic.last_message_ts = datetime.now().timestamp()
+
+            # exit if terminate flag is set
+            if topic.terminate:
+                logger.warning("Got terminate signal. Exiting")
+                break
+        # Return topic meta
+        return topic
 
     def _send_transaction(self, logger: logging.Logger,
                           topic: TopicStatus) -> TopicStatus:
@@ -610,6 +721,7 @@ class StreamVerifier():
                 pass
             return
 
+        topic.first_message_ts = datetime.now().timestamp()
         msg_gen = MessageGenerator()
         for key, value in msg_gen.gen_indexed_messages(
                 topic.index, topic.msgs_per_transaction):
@@ -657,9 +769,10 @@ class StreamVerifier():
         One Consumer per worker thread.
         """
         self.logger.info("Initializing consumers")
+        self.total_messages = -1
         for name in self.workload_config.topic_names_consume:
             topic_config = {
-                "id": self.id_index,
+                "id": self.topic_id,
                 "source_topic_name": name,
                 "target_topic_name": name,
                 # 0 means consume all messages
@@ -668,6 +781,8 @@ class StreamVerifier():
                 "index": 0,
                 "processed_count": 0,
                 "partitions_eof": set(),
+                # First message in batch
+                "first_message_ts": datetime.now().timestamp(),
                 # time when last message consumed
                 "last_message_ts": datetime.now().timestamp(),
                 # max time between consuming messages
@@ -684,6 +799,9 @@ class StreamVerifier():
                 "reached_eof": False,
                 # termination flag
                 "terminate": False,
+                "errors": [],
+                "msgs_timings": [],
+
                 # not used, but needs to be filled
                 "msgs_per_transaction": 1,
                 "producer": None,
@@ -731,6 +849,7 @@ class StreamVerifier():
             logger.debug(f"...topic {topic.source_topic_name} already at eof")
             return topic
 
+        topic.first_message_ts = datetime.now().timestamp()
         # Message consuming loop
         consumer = ck.Consumer(topic.consumer_config)
         try:
@@ -762,15 +881,21 @@ class StreamVerifier():
                                     f"end at offset {msg.offset()}")
                         topic.reached_eof = True
                         break
-                    # If not EOF, raise the error
-                    elif msg.error():
-                        raise ck.KafkaException(msg.error())
+                    # If not EOF, save the error and exit
+                    else:
+                        logger.error("Failed to consume message from "
+                                     f"'{topic.source_topic_name}': "
+                                     f"{msg.error().str()}")
+                        topic.errors.append(msg.error().str())
+                        break
                 else:
                     topic.last_message_ts = datetime.now().timestamp()
                     # Increment index
                     topic.index += 1
-                    # For consuming operation, processed count
-                    # almost always equals to index
+                    if topic.index % app_config.consume_count_per_thread == 0:
+                        # Force move to different thread and topic
+                        break
+                    # Increment processed count for this iteration
                     topic.processed_count += 1
                     # log only milestones to eliminate IO stress
                     if topic.index % CONSUMER_LOGGING_THRESHOLD == 0:
@@ -795,10 +920,11 @@ class StreamVerifier():
         """Precreates topic list for atomic operation
         """
         self.logger.info("Initializing topic pairs for atomic processing")
+        self.total_messages = -1
         for source_topic_name, target_topic_name \
                 in self.workload_config.topic_name_pairs:
             topic_config = {
-                "id": self.id_index,
+                "id": self.topic_id,
                 "source_topic_name": source_topic_name,
                 "target_topic_name": target_topic_name,
                 # 0 means consume all messages
@@ -807,6 +933,8 @@ class StreamVerifier():
                 "index": 0,
                 "processed_count": 0,
                 "partitions_eof": set(),
+                # First message in batch
+                "first_message_ts": datetime.now().timestamp(),
                 # time when last message consumed
                 "last_message_ts": datetime.now().timestamp(),
                 # max time between consuming messages
@@ -818,14 +946,14 @@ class StreamVerifier():
                     "auto.offset.reset": "earliest",
                     "enable.auto.commit": False,
                     "enable.partition.eof": True,
-                    "isolation.level": "read_committed",
-                    "value.deserializer": MessageTransforms.deserialize,
-                    "key.deserializer": MessageTransforms.deserialize,
+                    "isolation.level": "read_committed"
                 },
                 # EOF flag
                 "reached_eof": False,
                 # termination flag
                 "terminate": False,
+                "errors": [],
+                "msgs_timings": [],
                 # how much messages to process per transaction
                 "msgs_per_transaction": app_config.msg_per_txn,
                 "producer": None,
@@ -860,58 +988,8 @@ class StreamVerifier():
             diff_ms = datetime.now().timestamp() - topic.last_message_ts
             return int(diff_ms * 1000)
 
-        def _elapsed_ms(ts):
-            return int((datetime.now().timestamp() - ts) * 1000)
-
-        def get_high_watermarks(topic_name):
-            partitions = [
-                ck.TopicPartition(topic_name, p)
-                for p in consumer.list_topics().topics[topic_name].partitions
-            ]
-            # committed = consumer.committed(partitions, timeout=10)
-            hwms = {}
-            for p in partitions:
-                # Get the partitions low and high watermark offsets.
-                (lo, hi) = consumer.get_watermark_offsets(p,
-                                                          timeout=10,
-                                                          cached=False)
-                hwms[p.partition] = hi
-            return hwms
-
-        def reached_end():
-            """Slow way to check if partition reached end offset
-            Whole check lasts ~900ms which is very slow for high scale version
-            of the workload
-            """
-            high_watermarks = get_high_watermarks(topic.source_topic_name)
-
-            assignments = {tp.partition for tp in consumer.assignment()}
-            if len(assignments) == 0:
-                return False
-
-            positions = consumer.position([
-                ck.TopicPartition(topic.source_topic_name, p)
-                for p in assignments
-            ])
-            end_for = {
-                p.partition
-                for p in positions if p.partition in high_watermarks
-                and high_watermarks[p.partition] <= p.offset
-            }
-
-            self.logger.debug(
-                f"[{topic.transaction_id}] Topic {topic.source_topic_name} "
-                f"partitions high watermarks {high_watermarks}, "
-                f"assignment: {assignments} positions: {positions}, "
-                f"end_for: {end_for}")
-
-            topic.partitions_eof |= end_for
-            consumers = self.consumer_count
-            if len(topic.partitions_eof) == len(high_watermarks):
-                return True
-            return len(end_for) == len(assignments) and consumers > 1
-
-        consumer = ck.DeserializingConsumer(topic.consumer_config)
+        topic.first_message_ts = datetime.now().timestamp()
+        consumer = ck.Consumer(topic.consumer_config)
         active_tx = False
         try:
             logger.debug(f"...processing {topic.source_topic_name}")
@@ -949,6 +1027,20 @@ class StreamVerifier():
 
                 msg = consumer.poll(timeout=app_config.consume_poll_timeout)
                 if msg is not None:
+                    err = msg.error()
+                    if err is not None:
+                        if err.code() == ck.KafkaError._PARTITION_EOF:
+                            # End of partition event
+                            logger.info(f"Consumer of '{msg.topic()}' "
+                                        f"[{msg.partition()}] reached "
+                                        f"end at offset {msg.offset()}")
+                            topic.reached_eof = True
+                            break
+                        else:
+                            logger.error("Failed to consume messages "
+                                         f"from {topic.source_topic_name}")
+                            topic.errors.append(err.str())
+                            break
                     if not active_tx:
                         # begin transaction
                         topic.producer.begin_transaction()
@@ -977,6 +1069,10 @@ class StreamVerifier():
                             consumer.consumer_group_metadata())
                         topic.producer.commit_transaction()
                         active_tx = False
+
+                if topic.index % app_config.consume_count_per_thread == 0:
+                    # Force move to different thread and topic
+                    break
 
                 # exit if terminate flag is set
                 if topic.terminate:
@@ -1019,9 +1115,41 @@ class StreamVerifier():
 
         return topic
 
-    def _calculate_totals(self) -> Tuple:
+    def get_high_watermarks(self, topic_names: list) -> dict:
+        cfg = {
+            'bootstrap.servers': self.brokers,
+            'group.id': self.workload_config.topic_group_id,
+            'auto.offset.reset': 'latest',
+        }
+        topic_hwms = {}
+        c = ck.Consumer(cfg)
+        all_topics = c.list_topics().topics
+        for name in topic_names:
+            if name in all_topics:
+                partitions = [
+                    ck.TopicPartition(name, p)
+                    for p in all_topics[name].partitions
+                ]
+                hwms = {}
+                for p in partitions:
+                    # Get the partitions low and high watermark offsets.
+                    (lo, hi) = c.get_watermark_offsets(p,
+                                                       timeout=10,
+                                                       cached=False)
+                    hwms[p.partition] = hi
+                topic_hwms[name] = hwms
+        return topic_hwms
+
+    def _calculate_stats(self) -> dict:
+        FIRST = 0
+        LAST = 1
+        COUNT = 2
+
         msg_total = 0
         indices = []
+        intervals = []
+        per_thread_rates = []
+        # Collected message rate timings are for individual threads
         for t in self.topics.values():
             if self.produce_thread is not None:
                 msg_total += t.index
@@ -1030,7 +1158,63 @@ class StreamVerifier():
             elif self.atomic_thread is not None:
                 msg_total += t.index
             indices += [t.index]
-        return msg_total, indices
+            # Prepare rates
+            for intvl in t.msgs_timings:
+                # Calculate rate for this time interval for this thread
+                rate = intvl[COUNT] / (intvl[LAST] - intvl[FIRST])
+                if rate > 0:
+                    per_thread_rates.append(rate)
+                else:
+                    # just ignore empty intervals
+                    continue
+                # Calculate midpoint
+                mid_ts = (intvl[FIRST] + intvl[LAST]) / 2
+                # Search if calculated midpoint falls into intevals
+                # that is already saved
+                found = False
+                for all_i in intervals:
+                    if mid_ts > all_i[FIRST] and mid_ts < all_i[LAST]:
+                        # add processed count
+                        all_i[COUNT] += intvl[COUNT]
+                        found = True
+                if not found:
+                    # No such interval exists, add it
+                    # Since timestamps are in ascending order
+                    # creating intervals in reverse will result in
+                    # O(N log N) complexity comparing to O(N^2) if
+                    # append would be used
+                    intervals.insert(0, [
+                        np.floor(intvl[FIRST]),
+                        np.ceil(intvl[LAST]), intvl[COUNT]
+                    ])
+        # Extract rates for all threads per interval
+        all_threads_rates = []
+        for i in intervals:
+            rate = i[COUNT] / (i[LAST] - i[FIRST])
+            if rate > 0:
+                all_threads_rates.append(rate)
+        # Add 0 if no values present
+        if not all_threads_rates:
+            all_threads_rates.append(0)
+        if not per_thread_rates:
+            per_thread_rates.append(0)
+        # Ultimately, we get per-thread rates and all-thread rate
+        return {
+            "processed_messages": msg_total,
+            "indices": indices,
+            "per_thread_per_sec_min": np.min(per_thread_rates),
+            "per_thread_per_sec_avg": np.average(per_thread_rates),
+            "per_thread_per_sec_max": np.max(per_thread_rates),
+            "per_thread_per_sec_med": np.median(per_thread_rates),
+            "per_thread_per_sec_p90": np.percentile(per_thread_rates, 90),
+            "per_thread_per_sec_p95": np.percentile(per_thread_rates, 95),
+            "all_per_sec_min": np.min(all_threads_rates),
+            "all_per_sec_avg": np.average(all_threads_rates),
+            "all_per_sec_max": np.max(all_threads_rates),
+            "all_per_sec_med": np.median(all_threads_rates),
+            "all_per_sec_p90": np.percentile(all_threads_rates, 90),
+            "all_per_sec_p95": np.percentile(all_threads_rates, 95),
+        }
 
     def status(self, name: str = ""):
         """Provides current processing status
@@ -1042,11 +1226,20 @@ class StreamVerifier():
             dict: Dict with status
         """
 
-        response = {"topics": {}, "workload_config": {}}
+        response = {"topics": {}, "offsets": {}, "workload_config": {}}
         # specific topic if requested
         if len(name) > 0:
             # include topic as asked
-            response['topics'][name] = vars(self.topics_status[name])
+            response['topics'][name] = {
+                "config": vars(self.topics_status[name]),
+                "offsets": self.get_high_watermarks([name])
+            }
+
+        response['offsets'].update(
+            self.get_high_watermarks(self.workload_config.topic_names_produce))
+        response['offsets'].update(
+            self.get_high_watermarks(self.workload_config.topic_names_consume))
+
         # topics configuration to use in POST command
         topics_cfg = vars(self.workload_config)
         topics_cfg.update({
@@ -1056,11 +1249,7 @@ class StreamVerifier():
         response['workload_config'] = topics_cfg
         # Total stats and delivery errors
         # 'indices' is a list of current indexes in each topic
-        msg_total, indices = self._calculate_totals()
-        response['stats'] = {
-            "processed_messages": msg_total,
-            "indices": indices
-        }
+        response['stats'] = self._calculate_stats()
         response['delivery_errors'] = self.delivery_reports
         return response
 
@@ -1127,7 +1316,7 @@ class StreamVerifierWeb(StreamVerifier):
         def is_active(thread):
             return "ACTIVE" if self.is_alive(thread) else "READY"
 
-        self.wlogger.debug("Processing produce get request")
+        self.wlogger.debug("Processing get request")
         resp.status = falcon.HTTP_200  # This is the default status
         resp.content_type = falcon.MEDIA_JSON  # Default is JSON, so override
         status = self.status()
@@ -1345,7 +1534,7 @@ class StreamVerifierAtomic(StreamVerifierWeb):
                 self.workload_config.topic_prefix_consume = req.media[
                     'topic_prefix_consume']
             if 'topic_prefix_produce' in req.media:
-                self.workload_config.topic_prefix_consume = req.media[
+                self.workload_config.topic_prefix_produce = req.media[
                     'topic_prefix_produce']
             if 'topic_count' in req.media:
                 self.workload_config.topic_count = req.media['topic_count']
@@ -1376,8 +1565,21 @@ def start_webserver():
         app.add_route(route, handler)
 
     global app_config
-    app = falcon.App()
     logger = setup_logger(LOGGER_STARTUP)
+
+    app = falcon.App()
+    json_handler = falcon.media.JSONHandler(dumps=partial(
+        json.dumps,
+        cls=NpEncoder,
+        sort_keys=True,
+    ), )
+    extra_handlers = {
+        'application/json': json_handler,
+    }
+
+    app = falcon.App()
+    app.req_options.media_handlers.update(extra_handlers)
+    app.resp_options.media_handlers.update(extra_handlers)
 
     # Add subpages
     logger.debug("Initializing producer class")
@@ -1528,7 +1730,7 @@ if __name__ == '__main__':
                         '--workers',
                         dest="worker_threads",
                         type=int,
-                        default=1,
+                        default=4,
                         help="Number of threads to process messages")
 
     parser.add_argument("-g",
@@ -1548,7 +1750,7 @@ if __name__ == '__main__':
     parser_produce.add_argument('-c',
                                 '--topic-count',
                                 dest="topic_count",
-                                default=16,
+                                default=4,
                                 type=int,
                                 help="Number of topics to create")
 
