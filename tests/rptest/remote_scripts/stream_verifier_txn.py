@@ -1012,7 +1012,6 @@ class StreamVerifier():
         except ck.KafkaError as e:
             logger.error(f"Client error reported: {e.error} - {e.reason}, "
                          f"retryable: {e.retryable}")
-            # raise e
         finally:
             consumer.close()
             topic.producer.flush()
@@ -1059,7 +1058,7 @@ class StreamVerifier():
         # 'indices' is a list of current indexes in each topic
         msg_total, indices = self._calculate_totals()
         response['stats'] = {
-            "processsed_messages": msg_total,
+            "processed_messages": msg_total,
             "indices": indices
         }
         response['delivery_errors'] = self.delivery_reports
@@ -1082,6 +1081,12 @@ class StreamVerifier():
             t.terminate = True
             if t.producer is not None:
                 t.producer.flush()
+
+    def is_alive(self, thread: threading.Thread | None):
+        if thread is not None:
+            return thread.is_alive()
+        else:
+            return False
 
 
 class StreamVerifierWeb(StreamVerifier):
@@ -1119,10 +1124,19 @@ class StreamVerifierWeb(StreamVerifier):
 
     def on_get(self, req: falcon.Request, resp: falcon.Response):
         """Handles GET requests"""
+        def is_active(thread):
+            return "ACTIVE" if self.is_alive(thread) else "READY"
+
         self.wlogger.debug("Processing produce get request")
         resp.status = falcon.HTTP_200  # This is the default status
         resp.content_type = falcon.MEDIA_JSON  # Default is JSON, so override
-        resp.media = self.status()
+        status = self.status()
+        status['status'] = {
+            COMMAND_PRODUCE: is_active(self.produce_thread),
+            COMMAND_CONSUME: is_active(self.consume_thread),
+            COMMAND_ATOMIC: is_active(self.atomic_thread)
+        }
+        resp.media = status
 
     def on_delete(self, req: falcon.Request, resp: falcon.Response):
         self.terminate()
@@ -1163,7 +1177,7 @@ class StreamVerifierWeb(StreamVerifier):
                              resp: falcon.Response) -> bool:
         if thread is not None:
             if thread.is_alive():
-                self._http_400(["Active produce job not finished"], resp)
+                self._http_400(["Active job not finished"], resp)
                 return True
         return False
 
