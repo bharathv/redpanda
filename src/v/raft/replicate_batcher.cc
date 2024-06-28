@@ -176,16 +176,17 @@ replicate_batcher::do_cache_with_backpressure(
 
 ss::future<> replicate_batcher::flush(
   ssx::semaphore_units batcher_units, bool const transfer_flush) {
-    auto item_cache = std::exchange(_item_cache, {});
+    _flush_pending = false;
+    if (_item_cache.empty()) {
+        co_return;
+    }
+    std::vector<item_ptr> item_cache;
     // this function should not throw, nor return exceptional futures,
     // since it is usually invoked in the background and there is
     // nowhere suitable to
     try {
-        _flush_pending = false;
-        if (item_cache.empty()) {
-            co_return;
-        }
         auto u = co_await _ptr->_op_lock.get_units();
+        item_cache = std::exchange(_item_cache, {});
 
         if (!transfer_flush && _ptr->_transferring_leadership) {
             vlog(_ptr->_ctxlog.warn, "Dropping flush, leadership transferring");
