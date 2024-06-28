@@ -1413,6 +1413,9 @@ void application::wire_up_redpanda_services(
               .enable_longest_log_detection
               = config::shard_local_cfg()
                   .raft_enable_longest_log_detection.bind(),
+              .append_blocking_flush_limit
+              = config::shard_local_cfg()
+                  .raft_append_blocking_pending_flush_bytes.bind(),
             };
         },
         [] {

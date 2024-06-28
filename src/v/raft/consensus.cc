@@ -150,6 +150,8 @@ consensus::consensus(
   , _write_caching_enabled(log_config().write_caching())
   , _max_pending_flush_bytes(log_config().flush_bytes())
   , _max_flush_delay(compute_max_flush_delay())
+  , _append_blocking_flush_limit(
+      config::shard_local_cfg().raft_append_blocking_pending_flush_bytes())
   , _replication_monitor(this) {
     setup_metrics();
     setup_public_metrics();
@@ -268,6 +270,7 @@ void consensus::shutdown_input() {
         _as.request_abort();
         _commit_index_updated.broken();
         _follower_reply.broken();
+        _in_flight_flush_bytes_updated.broken();
     }
 }
 
@@ -2707,6 +2710,13 @@ ss::future<consensus::flushed> consensus::flush_log() {
     auto flushed_up_to = _log->offsets().dirty_offset;
     const auto prior_truncations = _log->get_log_truncation_counter();
     _probe->log_flushed();
+    auto pending_bytes_this_flush = _pending_flush_bytes;
+    _approx_in_flight_flush_bytes += _pending_flush_bytes;
+    // This is not 100% accurate in failure scenarios
+    auto decrement = ss::defer([pending_bytes_this_flush, this] {
+        _approx_in_flight_flush_bytes -= pending_bytes_this_flush;
+        _in_flight_flush_bytes_updated.broadcast();
+    });
     _pending_flush_bytes = 0;
     co_await _log->flush();
     _last_flush_time = clock_type::now();
@@ -4062,6 +4072,8 @@ void consensus::notify_config_update() {
     if (_deferred_flusher.armed()) {
         _deferred_flusher.rearm(ss::lowres_clock::now() + flush_ms());
     }
+    _append_blocking_flush_limit
+      = config::shard_local_cfg().raft_append_blocking_pending_flush_bytes();
 }
 
 size_t consensus::bytes_to_deliver_to_learners() const {

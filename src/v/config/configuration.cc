@@ -427,6 +427,14 @@ configuration::configuration()
           }
           return std::nullopt;
       })
+  , raft_append_blocking_pending_flush_bytes(
+      *this,
+      "raft_append_blocking_pending_flush_bytes",
+      "If the pending flush bytes exceed this limit, appends are blocked until "
+      "the pending bytes goes below this threshold. This helps propagate "
+      "backpressure to the leader and subsequently more batching.",
+      {.needs_restart = needs_restart::no, .visibility = visibility::tunable},
+      5_MiB)
   , raft_enable_longest_log_detection(
       *this,
       "raft_enable_longest_log_detection",

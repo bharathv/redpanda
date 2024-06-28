@@ -49,6 +49,7 @@ public:
         config::binding<std::chrono::milliseconds> write_caching_flush_ms;
         config::binding<std::optional<size_t>> write_caching_flush_bytes;
         config::binding<bool> enable_longest_log_detection;
+        config::binding<size_t> append_blocking_flush_limit;
     };
     using config_provider_fn = ss::noncopyable_function<configuration()>;
 

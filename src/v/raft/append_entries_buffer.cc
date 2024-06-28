@@ -116,6 +116,15 @@ ss::future<> append_entries_buffer::do_flush(
     // units were released before flushing log
     co_await std::move(f);
 
+    co_await _consensus._in_flight_flush_bytes_updated
+      .wait(
+        5s,
+        [this] {
+            return _consensus._approx_in_flight_flush_bytes
+                   < _consensus._append_blocking_flush_limit;
+        })
+      .handle_exception_type([](const ss::condition_variable_timed_out&) {});
+
     propagate_results(std::move(replies), std::move(response_promises));
     _flushed.broadcast();
     co_return;

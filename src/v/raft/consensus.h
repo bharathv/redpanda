@@ -835,6 +835,7 @@ private:
 
     replicate_batcher _batcher;
     size_t _pending_flush_bytes{0};
+    size_t _approx_in_flight_flush_bytes{0};
     clock_type::time_point _last_flush_time;
     /// Ensures that we do not schedule multiple redudant flushes.
     bool _in_flight_flush = false;
@@ -857,6 +858,7 @@ private:
     ctx_log _ctxlog;
     ss::condition_variable _commit_index_updated;
 
+    ss::condition_variable _in_flight_flush_bytes_updated;
     std::chrono::milliseconds _replicate_append_timeout;
     std::chrono::milliseconds _recovery_append_timeout;
     size_t _heartbeat_disconnect_failures;
@@ -916,6 +918,8 @@ private:
     // Its a variant to workaround a bug in cv::wait() method,
     // check comment in compute_max_flush_delay() for details
     flush_delay_t _max_flush_delay;
+
+    size_t _append_blocking_flush_limit;
 
     // Timer responsible for flush.ms. The timer is only armed when
     // requests without an explicit flush arrive and the timer is

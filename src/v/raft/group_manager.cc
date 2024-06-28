@@ -70,6 +70,8 @@ group_manager::group_manager(
       [this]() { trigger_config_update_notification(); });
     _configuration.write_caching_flush_bytes.watch(
       [this]() { trigger_config_update_notification(); });
+    _configuration.append_blocking_flush_limit.watch(
+      [this]() { trigger_config_update_notification(); });
     setup_metrics();
 }
 

@@ -111,6 +111,7 @@ struct configuration final : public config_store {
     property<std::optional<size_t>> raft_replica_max_pending_flush_bytes;
     property<std::chrono::milliseconds> raft_flush_timer_interval_ms;
     property<std::chrono::milliseconds> raft_replica_max_flush_delay_ms;
+    property<size_t> raft_append_blocking_pending_flush_bytes;
     property<bool> raft_enable_longest_log_detection;
     // Kafka
     property<bool> enable_usage;
