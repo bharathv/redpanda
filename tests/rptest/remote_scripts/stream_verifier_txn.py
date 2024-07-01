@@ -25,7 +25,7 @@ from datetime import datetime
 from itertools import repeat
 from functools import partial
 from time import sleep
-from typing import Generator, IO, Tuple
+from typing import Generator, IO, Tuple, Callable, Any, List
 from wsgiref.simple_server import make_server
 
 global title
@@ -363,16 +363,55 @@ class TopicStatus(Updateable):
     # list of tuples, first, last, processed count
     msgs_timings: list
 
+    # Function should have followind format:
+    # func(start_index, message_count) -> Generator
+    message_generator: None | Callable[[int, int], Generator]
+
+    # Function should have followind format:
+    # func(src_value) -> bool
+    message_validator: None | Callable[[Any], bool]
+
+    # Function should have followind format:
+    # func(src_key, src_value) -> Tuple(src_key, src_value)
+    message_transform: None | Callable[[str, str], List[str]]
+
     @property
     def transaction_id(self):
         return f"{self.id}-{self.source_topic_name}-{self.last_message_ts}"
+
+
+# This can hold future checksum checks or similar
+class MessageValidators:
+    """Class to hold message validation strategies
+    """
+
+    previous_number = -1
+
+    # Function is general case can have different messages value type
+    # so we should not stick to single one
+    def is_numbered_sequence(self, value) -> bool:
+        """Functions validates if message has number grater by exactly 1
+
+        Args:
+            value (Unknown): message value
+
+        Returns:
+            bool: Whether given value bigger by exactly 1
+        """
+        if not isinstance(value, int):
+            # Just fail check if the type is not correct
+            return False
+
+        outcome = (value - self.previous_number) == 1
+        self.previous_number = value
+        return outcome
 
 
 class MessageTransforms:
     """Class to hold message transforming functions
     """
     @staticmethod
-    def dezero_transform(src_key, src_value):
+    def dezero_transform(src_key: str, src_value: str) -> List:
         """Removes zeroes from all numbers in value
         Example:
             src value "aaa00023bbb_453z0002"
@@ -404,10 +443,10 @@ class MessageTransforms:
         if len(active_number) > 0:
             new_int = int(active_number)
             new_value += str(new_int)
-        return src_key, new_value
+        return [src_key, new_value]
 
 
-class MessageGenerator:
+class MessageGenerators:
     """Various Generator functions to use in Producer
     """
     @staticmethod
@@ -582,6 +621,8 @@ class StreamVerifier():
             self.logger.info(f"Messages per topic is {msgs_per_topic} "
                              f"with the total of {self.total_messages}")
         for name in self.workload_config.topic_names_produce:
+            # In future, this topic config can be provided externally
+            # to gain even more flexibility
             topic_config = {
                 "id": self.topic_id,
                 # For produce only mode just set them to the same value
@@ -601,7 +642,12 @@ class StreamVerifier():
                 "reached_eof": False,
                 "terminate": False,
                 "errors": [],
-                "msgs_timings": []
+                "msgs_timings": [],
+                # each topic has its own message generator
+                # so it is instance of a class in-place
+                "message_generator": MessageGenerators().gen_indexed_messages,
+                "message_validator": None,
+                "message_transform": None,
             }
             t = TopicStatus(**topic_config)
             if app_config.use_txn_on_produce:
@@ -654,9 +700,13 @@ class StreamVerifier():
                     sleep(wait_time)
 
         topic.first_message_ts = datetime.now().timestamp()
-        msg_gen = MessageGenerator()
-        for key, value in msg_gen.gen_indexed_messages(
-                topic.index, topic.msgs_per_transaction):
+        if topic.message_generator is None:
+            topic.errors.append("Message generator is not defined, "
+                                "unable to produce")
+            return topic
+
+        for key, value in topic.message_generator(topic.index,
+                                                  topic.msgs_per_transaction):
             # Handle message rate
             ensure_message_rate(topic.msgs_rate_ms, topic.last_message_ts,
                                 logger)
@@ -679,6 +729,8 @@ class StreamVerifier():
             if topic.terminate:
                 logger.warning("Got terminate signal. Exiting")
                 break
+        # Make sure all messages being delivered
+        topic.producer.flush()
         # Return topic meta
         return topic
 
@@ -722,9 +774,13 @@ class StreamVerifier():
             return
 
         topic.first_message_ts = datetime.now().timestamp()
-        msg_gen = MessageGenerator()
-        for key, value in msg_gen.gen_indexed_messages(
-                topic.index, topic.msgs_per_transaction):
+        if topic.message_generator is None:
+            topic.errors.append("Message generator is not defined, "
+                                "unable to produce")
+            return topic
+
+        for key, value in topic.message_generator(topic.index,
+                                                  topic.msgs_per_transaction):
             # Handle message rate
             self.ensure_message_rate(topic.msgs_rate_ms, topic.last_message_ts,
                                      logger)
@@ -758,6 +814,9 @@ class StreamVerifier():
             if topic.terminate:
                 logger.warning("Got terminate signal. Exiting")
                 break
+        # Make sure all messages being delivered
+        topic.producer.flush()
+
         # Return topic meta
         return topic
 
@@ -771,6 +830,10 @@ class StreamVerifier():
         self.logger.info("Initializing consumers")
         self.total_messages = -1
         for name in self.workload_config.topic_names_consume:
+            # Instanciate validator
+            validators = MessageValidators()
+            # reset validator
+            validators.is_numbered_sequence(-1)
             topic_config = {
                 "id": self.topic_id,
                 "source_topic_name": name,
@@ -801,6 +864,11 @@ class StreamVerifier():
                 "terminate": False,
                 "errors": [],
                 "msgs_timings": [],
+                # This is consume topic action,
+                # No generation or transform needed
+                "message_generator": None,
+                "message_validator": validators.is_numbered_sequence,
+                "message_transform": None,
 
                 # not used, but needs to be filled
                 "msgs_per_transaction": 1,
@@ -890,6 +958,32 @@ class StreamVerifier():
                         break
                 else:
                     topic.last_message_ts = datetime.now().timestamp()
+                    # Check if there is validation needed
+                    if topic.message_validator is not None:
+                        try:
+                            value = msg.value().decode()
+                            int_value = int(value)
+                            iscorrect = topic.message_validator(int_value)
+                            if not iscorrect:
+                                error_message = \
+                                    f"Message value of '{value}' failed " \
+                                    "validation check of " \
+                                    f"'{topic.message_validator.__qualname__}'"
+                            else:
+                                error_message = ""
+                        except Exception:
+                            error_message = \
+                                f"Invalid message value of '{value}' " \
+                                "for selected validator " \
+                                f"{topic.message_validator.__qualname__}"
+                        finally:
+                            # Validation errors does not break message flow
+                            # so no loop exit.
+                            # But they will affect topic queue later
+                            if len(error_message) > 0:
+                                logger.error(error_message)
+                                topic.errors.append(error_message)
+
                     # Increment index
                     topic.index += 1
                     if topic.index % app_config.consume_count_per_thread == 0:
@@ -957,7 +1051,14 @@ class StreamVerifier():
                 # how much messages to process per transaction
                 "msgs_per_transaction": app_config.msg_per_txn,
                 "producer": None,
-                "msgs_rate_ms": self.msgs_rate_ms
+                "msgs_rate_ms": self.msgs_rate_ms,
+
+                # This is atomic topic action,
+                # No generation or validation is needed
+                # Also, transformations is optional
+                "message_generator": None,
+                "message_validator": None,
+                "message_transform": None,
             }
             t = TopicStatus(**topic_config)
             t.producer = ck.Producer({
@@ -1047,8 +1148,13 @@ class StreamVerifier():
                         active_tx = True
                     topic.index += 1
                     processed_count += 1
-                    t_key, t_value = MessageTransforms.dezero_transform(
-                        msg.key(), msg.value())
+                    # If message transform is defined, use it
+                    if topic.message_transform is not None:
+                        t_key, t_value = topic.message_transform(
+                            msg.key(), msg.value())
+                    else:
+                        t_key = msg.key().decode()
+                        t_value = msg.value().decode()
 
                     topic.producer.produce(topic.target_topic_name,
                                            value=t_value,
@@ -1239,6 +1345,12 @@ class StreamVerifier():
             self.get_high_watermarks(self.workload_config.topic_names_produce))
         response['offsets'].update(
             self.get_high_watermarks(self.workload_config.topic_names_consume))
+
+        # Collect errors
+        response['errors'] = []  # type: ignore
+        for k, v in self.topics_status.items():
+            for error in v.errors:
+                response['errors'].append(f"[{k}] {error}")
 
         # topics configuration to use in POST command
         topics_cfg = vars(self.workload_config)
