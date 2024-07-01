@@ -41,12 +41,11 @@ LOGGER_WEB_CONSUME = "web_consume"
 
 CONSUMER_LOGGING_THRESHOLD = 100
 
-CONSUME_STOP_EOF = "eof"
-CONSUME_STOP_SLEEP = "sleep"
-CONSUME_STOP_CONTINUOUS = "continuous"
-consume_stop_options = [
-    CONSUME_STOP_EOF, CONSUME_STOP_SLEEP, CONSUME_STOP_CONTINUOUS
-]
+GROUP_ID = "stream-group"
+TOPIC_SOURCE = "source"
+TOPIC_TARGET = "target"
+# TODO: make it configurable for scale test
+TOPIC_PARTITIONS = 30
 
 
 # Class to serialize int64
@@ -130,30 +129,15 @@ class AppCfg(Updateable):
     """
     app_name: str = app_name
     brokers: str = "localhost:9092"
-    # topic group id for Consumer configuration
-    topic_group_id: str = "group-stream-verifier-tx"
-    # Topic prefix, full topic name will be
-    # <topic_prefix>-<range(topic_count)>
-    # I.e. "stream-verifier-topic-1", "stream-verifier-topic-2", etc
-    topic_prefix_produce: str = "stream-topic-dst"
-    topic_prefix_consume: str = "stream-topic-src"
-    topic_count: int = 16
+
     # 0 - no rate limiting
     msg_rate_limit: int = 0
     msg_per_txn: int = 1
     # per-topic = msg_total / topic_count
     msg_total: int = 256
-    # Flag to use transactions for single produce job
-    use_txn_on_produce: bool = False
     # Amount of errors in topic before removing it from processing
     topic_error_threshold: int = 1
-    # When consume will stop processing
-    # eof - on discovering partition EOF
-    # sleep - when there is no new messages after sleep time
-    # continuous - exit only on terminate signal
-    consume_stop_criteria: str = "sleep"
-    # how much time to wait in a loop for next message, sec
-    consume_timeout_s: int = 60
+
     # Timeout for poll operation
     consume_poll_timeout: int = 5
     # How much messages to consume before moving to other thread
@@ -170,21 +154,6 @@ class AppCfg(Updateable):
     web_port: int = 8090
 
     @property
-    def workload_config(self):
-        """Generates topic config for WorkloadConfig class
-
-        Returns:
-            dict: config that can be used for WorkloadConfig(**workload_config)
-        """
-        return {
-            "topic_group_id": self.topic_group_id,
-            "topic_prefix_produce": self.topic_prefix_produce,
-            "topic_prefix_consume": self.topic_prefix_consume,
-            "topic_count": self.topic_count,
-            "consume_timeout_s": self.consume_timeout_s
-        }
-
-    @property
     def forbidden_keys(self) -> list[str]:
         # non-updatable vars via REST handle
         return ['web_port', 'app_name']
@@ -199,11 +168,6 @@ class AppCfg(Updateable):
         Returns JSON on GET, same one can be used to update via POST:
         {
             "brokers": "'localhost:19092'",
-            "topic_group_id": "group-stream-verifier-tx",
-            "topic_prefix_produce": "stream-topic-src",
-            "topic_prefix_consume": "stream-topic-dst",
-            "topic_count": 16,
-            "msg_rate_limit": 0,
             "msg_per_txn": 1,
             "msg_total": 256,
             "consume_timeout_s": 60,
@@ -239,14 +203,6 @@ class AppCfg(Updateable):
         # Validate options
         error_msgs = validate_keys(keys_req, keys_list, self.forbidden_keys)
 
-        # Validate specific option
-        if "consume_stop_criteria" in keys_req:
-            valid, error = validate_option("consume_stop_criteria",
-                                           req.media["consume_stop_criteria"],
-                                           consume_stop_options)
-            if not valid:
-                error_msgs += [error]
-
         if error_msgs:
             # Just dump errors as list
             msg = f"Incoming request invalid: {', '.join(error_msgs)}"
@@ -267,49 +223,6 @@ class AppCfg(Updateable):
 app_config = AppCfg()
 
 
-# Following classes hold future topic configuration
-@dataclass(kw_only=True)
-class WorkloadConfig:
-    """Holds data for topic operations: Produce/Consume.
-    Can generate list of topic names based on config
-
-    I.e. 'WorkloadConfig' holds initialization data for
-    Producers And Consumers alike
-    """
-    topic_group_id: str
-    topic_prefix_produce: str
-    topic_prefix_consume: str
-    topic_count: int
-    # how much time to wait in a loop for the next message
-    consume_timeout_s: int
-
-    @property
-    def topic_names_produce(self):
-        # <topic_prefix_produce>-<sequence_number>
-        return [
-            f"{self.topic_prefix_produce}-{idx}"
-            for idx in range(self.topic_count)
-        ]
-
-    @property
-    def topic_names_consume(self):
-        # <topic_prefix_consume>-<sequence_number>
-        return [
-            f"{self.topic_prefix_consume}-{idx}"
-            for idx in range(self.topic_count)
-        ]
-
-    @property
-    def topic_name_pairs(self):
-        # Pairs
-        # ("<topic_prefix_produce>-<sequence_number>",
-        # <topic_prefix_consume>-<sequence_number>)
-        return [(
-            f"{self.topic_prefix_consume}-{idx}",
-            f"{self.topic_prefix_produce}-{idx}",
-        ) for idx in range(self.topic_count)]
-
-
 @dataclass(kw_only=True)
 class TopicStatus(Updateable):
     """Holds single live topic status
@@ -324,12 +237,6 @@ class TopicStatus(Updateable):
     Returns:
         _type_: _description_
     """
-    # Reserved for future use in case of name will not be usable
-    id: int
-    # topic to consume from
-    source_topic_name: str
-    # atomic produce target
-    target_topic_name: str
     # how many messages to process in single transaction
     msgs_per_transaction: int
     # Total messages to be processed for this topic
@@ -340,14 +247,8 @@ class TopicStatus(Updateable):
     processed_count: int
     # list of partitions ids that finished producing messages
     partitions_eof: set
-    # timestamp for first message in batch
-    first_message_ts: float
-    # timestamp for last message
-    last_message_ts: float
     # how much ms should pass between messages to be sent
     msgs_rate_ms: float
-    # how much time to wait when waiting for the next message
-    consume_timeout_s: int
     # Precreated Producer class.
     producer: ck.Producer
     # All data needed to create consumer class.
@@ -360,8 +261,6 @@ class TopicStatus(Updateable):
     terminate: bool
     # if errors happen during produce/send track them here
     errors: list[str]
-    # list of tuples, first, last, processed count
-    msgs_timings: list
 
     # Function should have followind format:
     # func(start_index, message_count) -> Generator
@@ -377,7 +276,7 @@ class TopicStatus(Updateable):
 
     @property
     def transaction_id(self):
-        return f"{self.id}-{self.source_topic_name}-{self.last_message_ts}"
+        return "stream-tx-id"
 
 
 # This can hold future checksum checks or similar
@@ -405,45 +304,6 @@ class MessageValidators:
         outcome = (value - self.previous_number) == 1
         self.previous_number = value
         return outcome
-
-
-class MessageTransforms:
-    """Class to hold message transforming functions
-    """
-    @staticmethod
-    def dezero_transform(src_key: str, src_value: str) -> List:
-        """Removes zeroes from all numbers in value
-        Example:
-            src value "aaa00023bbb_453z0002"
-            returned: "aaa23bbb_453z2"
-
-        Args:
-            src_key (str): message key
-            src_value (str): message value
-
-        Returns:
-            str, str: transformed key and value
-        """
-        active_number = ""
-        new_value = ""
-        if isinstance(src_key, bytes):
-            src_key = src_key.decode('utf-8')
-        if isinstance(src_value, bytes):
-            src_value = src_value.decode('utf-8')
-        for char in src_value:
-            if char in string.digits:
-                active_number += char
-            else:
-                new_int = int(active_number) if len(active_number) > 0 else 0
-                if new_int > 0:
-                    new_value += str(new_int) + char
-                    active_number = ""
-                else:
-                    new_value += char
-        if len(active_number) > 0:
-            new_int = int(active_number)
-            new_value += str(new_int)
-        return [src_key, new_value]
 
 
 class MessageGenerators:
@@ -482,7 +342,6 @@ class StreamVerifier():
         # Remove quotes from broker config value if an
         self.brokers = brokers.strip('\"').strip("'")
         # Create main topics config
-        self.workload_config = WorkloadConfig(**workload_config)
         self.message_rate_limit = rate
         # It is reasonable to assume that single message will not be sent
         # faster than 1 ms in case of no rate limitations
@@ -491,6 +350,7 @@ class StreamVerifier():
         self.total_messages = total_messages
         self.workers = worker_threads
         # Announcement of dynamic vars
+        self.topic_status = None
         self.topics_status = {}
         self.topics = {}
         self._topic_id_template = datetime.strftime(datetime.now(),
@@ -499,7 +359,6 @@ class StreamVerifier():
         self.produce_thread = None
         self.consume_thread = None
         self.atomic_thread = None
-        self.delivery_reports = {}
         self.consumer_count = 0
 
     @property
@@ -508,23 +367,7 @@ class StreamVerifier():
         return f"{self._topic_id_template}-{self._topic_id_index:05}"
 
     @staticmethod
-    def ensure_message_rate(rate_ms: float, last_message_ts: float,
-                            logger: logging.Logger):
-        def time_since_last_msg() -> int:
-            diff_ms = datetime.now().timestamp() - last_message_ts
-            return int(diff_ms * 1000)
-
-        # Handle message rate
-        if rate_ms > 0:
-            _time_since = time_since_last_msg()
-            if _time_since < rate_ms:
-                wait_time = (rate_ms - _time_since) / 1000
-                logger.debug(f"...waiting {wait_time}s before sending message")
-                sleep(wait_time)
-
-    @staticmethod
     def _worker_thread(func, workers: int, topics: dict, total_messages: int,
-                       consume_stop: str, consume_sleep: int,
                        logger: logging.Logger):
         pool = ThreadPoolExecutor(workers, "stream_worker")
         msgs_processed = 0
@@ -560,27 +403,8 @@ class StreamVerifier():
                 logger.warning("No more topics to process")
                 break
             # Check EOF flag and break out if all set
-            if all([t.reached_eof for t in topics.values()]):
-                logger.info('All topics reached EOF')
-                # EOF checks will work only for Consume enabled actions
-                # Produce actions will exit on reaching total_messages
-                if consume_stop == CONSUME_STOP_EOF:
-                    # Just exit
-                    logger.info("Stopping consumption")
-                    break
-                elif consume_stop == CONSUME_STOP_SLEEP:
-                    # Check if consumed totals had changed
-                    if last_message_count < msgs_processed:
-                        last_message_count = msgs_processed
-                        logger.info(f"Sleeping for {consume_sleep}s")
-                        sleep(consume_sleep)
-                    else:
-                        logger.info(f"No new messages after {consume_sleep}s, "
-                                    "exiting")
-                        break
-                elif consume_stop == CONSUME_STOP_CONTINUOUS:
-                    # Nothing to do, just go to another iteration
-                    pass
+            # Just poll until all the messages are processed
+            # or a timeout hits
 
             # Log pretty name of underlying func
             logger.info(f"{func.__qualname__}, "
@@ -594,12 +418,10 @@ class StreamVerifier():
         logger.info("End of processing messages.")
 
     def create_thread(self, func, thread_name="stream_thread"):
-        thread = threading.Thread(
-            name=thread_name,
-            target=self._worker_thread,
-            args=(func, self.workers, self.topics, self.total_messages,
-                  app_config.consume_stop_criteria,
-                  app_config.consume_sleep_time_s, self.logger))
+        thread = threading.Thread(name=thread_name,
+                                  target=self._worker_thread,
+                                  args=(func, self.workers, self.topics,
+                                        self.total_messages, self.logger))
         thread.start()
         return thread
 
@@ -608,57 +430,35 @@ class StreamVerifier():
         One producer per topic.
         """
         self.logger.info("Initializing producers")
-        # Calculate messages per topic and announce changes
-        msgs_per_topic = int(self.total_messages /
-                             self.workload_config.topic_count)
-        new_total_messages = msgs_per_topic * self.workload_config.topic_count
-        if new_total_messages != self.total_messages:
-            self.logger.warning("Messages per topic rounded to "
-                                f"{msgs_per_topic} with the new "
-                                f"total of {new_total_messages}")
-            self.total_messages = new_total_messages
-        else:
-            self.logger.info(f"Messages per topic is {msgs_per_topic} "
-                             f"with the total of {self.total_messages}")
-        for name in self.workload_config.topic_names_produce:
-            # In future, this topic config can be provided externally
-            # to gain even more flexibility
-            topic_config = {
-                "id": self.topic_id,
-                # For produce only mode just set them to the same value
-                "source_topic_name": name,
-                "target_topic_name": name,
-                "msgs_per_transaction": app_config.msg_per_txn,
-                "total_messages": msgs_per_topic,
-                "index": 0,
-                "processed_count": 0,
-                "partitions_eof": set(),
-                "first_message_ts": datetime.now().timestamp(),
-                "last_message_ts": datetime.now().timestamp(),
-                "msgs_rate_ms": self.msgs_rate_ms,
-                "consume_timeout_s": app_config.consume_timeout_s,
-                "producer": None,
-                "consumer_config": {},
-                "reached_eof": False,
-                "terminate": False,
-                "errors": [],
-                "msgs_timings": [],
-                # each topic has its own message generator
-                # so it is instance of a class in-place
-                "message_generator": MessageGenerators().gen_indexed_messages,
-                "message_validator": None,
-                "message_transform": None,
-            }
-            t = TopicStatus(**topic_config)
-            if app_config.use_txn_on_produce:
-                t.producer = ck.Producer({
-                    'bootstrap.servers': self.brokers,
-                    'transactional.id': t.transaction_id
-                })
-                t.producer.init_transactions()
-            else:
-                t.producer = ck.Producer({'bootstrap.servers': self.brokers})
-            self.topics[t.target_topic_name] = t
+
+        topic_config = {
+            "id": self.topic_id,
+            # For produce only mode just set them to the same value
+            "source_topic_name": TOPIC_SOURCE,
+            "target_topic_name": TOPIC_TARGET,
+            "msgs_per_transaction": app_config.msg_per_txn,
+            "total_messages": self.total_messages,
+            "index": 0,
+            "processed_count": 0,
+            "partitions_eof": set(),
+            "first_message_ts": datetime.now().timestamp(),
+            "last_message_ts": datetime.now().timestamp(),
+            "msgs_rate_ms": self.msgs_rate_ms,
+            "producer": None,
+            "consumer_config": {},
+            "reached_eof": False,
+            "terminate": False,
+            "errors": [],
+            "msgs_timings": [],
+            # each topic has its own message generator
+            # so it is instance of a class in-place
+            "message_generator": MessageGenerators().gen_indexed_messages,
+            "message_validator": None,
+            "message_transform": None,
+        }
+        self.topic_status = TopicStatus(**topic_config)
+        self.topic_status.producer = ck.Producer(
+            {'bootstrap.servers': self.brokers})
 
     #
     # Produce functions
@@ -671,11 +471,8 @@ class StreamVerifier():
             Defaults to True.
         """
         self.logger.info("Start of sending messages")
-        func = self._async_send_messages
-        if app_config.use_txn_on_produce:
-            func = self._send_transaction
         self.produce_thread = self.create_thread(
-            func, thread_name="stream_produce_thread")
+            self._async_send_messages, thread_name="stream_produce_thread")
         if wait:
             self.produce_thread.join()
         return
@@ -683,23 +480,7 @@ class StreamVerifier():
     @staticmethod
     def _async_send_messages(logger: logging.Logger,
                              topic: TopicStatus) -> TopicStatus:
-        # Thread safe function to send messages as fast as possible
-        def ensure_message_rate(rate_ms: float, last_message_ts: float,
-                                logger: logging.Logger):
-            def time_since_last_msg() -> int:
-                diff_ms = datetime.now().timestamp() - last_message_ts
-                return int(diff_ms * 1000)
 
-            # Handle message rate
-            if rate_ms > 0:
-                _time_since = time_since_last_msg()
-                if _time_since < rate_ms:
-                    wait_time = (rate_ms - _time_since) / 1000
-                    logger.debug(
-                        f"...waiting {wait_time}s before sending message")
-                    sleep(wait_time)
-
-        topic.first_message_ts = datetime.now().timestamp()
         if topic.message_generator is None:
             topic.errors.append("Message generator is not defined, "
                                 "unable to produce")
@@ -707,116 +488,21 @@ class StreamVerifier():
 
         for key, value in topic.message_generator(topic.index,
                                                   topic.msgs_per_transaction):
-            # Handle message rate
-            ensure_message_rate(topic.msgs_rate_ms, topic.last_message_ts,
-                                logger)
-
             # Async message sending
             try:
-                topic.producer.produce(topic.target_topic_name,
-                                       key=key,
-                                       value=value)
+                topic.producer.produce(TOPIC_TARGET, key=key, value=value)
                 topic.index += 1
                 topic.processed_count += 1
             except ck.KafkaException as e:
                 logger.warning(e)
                 topic.errors.append(e)
 
-            # save time for this message
-            topic.last_message_ts = datetime.now().timestamp()
-
             # exit if terminate flag is set
             if topic.terminate:
                 logger.warning("Got terminate signal. Exiting")
                 break
         # Make sure all messages being delivered
         topic.producer.flush()
-        # Return topic meta
-        return topic
-
-    def _send_transaction(self, logger: logging.Logger,
-                          topic: TopicStatus) -> TopicStatus:
-        """
-            Transactional message sent. Uses simple indexed generator
-        """
-        def acked(err: ck.KafkaError, msg: ck.Message):
-            """
-                Unsafe callback that fills up delivery reports
-                Can be modified to send reports externally
-
-                err: error class from Kafka
-                msg: message that was sent
-            """
-            t = msg.topic()
-            pt = msg.partition()
-            pt = pt if pt else 'N'
-            k = msg.key().decode()
-            v = msg.value().decode()
-
-            if err is not None:
-                # log delivery error locally
-                logger.error(f"[{t}({pt}):{k}/{v}] {err.str()}")
-                # update delivery report
-                self.delivery_reports[f"{t}-{k}"] = {
-                    "latency": msg.latency(),
-                    "outcome": err.str()
-                }
-
-            else:
-                # Saving all delivery reports turned off for now
-                # self.delivery_reports[f"{t}-{k}"] = {
-                #     "partition": pt,
-                #     "latency": msg.latency(),
-                #     "offset": msg.offset(),
-                #     "outcome": "OK"
-                # }
-                pass
-            return
-
-        topic.first_message_ts = datetime.now().timestamp()
-        if topic.message_generator is None:
-            topic.errors.append("Message generator is not defined, "
-                                "unable to produce")
-            return topic
-
-        for key, value in topic.message_generator(topic.index,
-                                                  topic.msgs_per_transaction):
-            # Handle message rate
-            self.ensure_message_rate(topic.msgs_rate_ms, topic.last_message_ts,
-                                     logger)
-
-            # Async message sending
-            topic.producer.begin_transaction()
-            try:
-                topic.producer.produce(topic.target_topic_name,
-                                       key=key,
-                                       value=value,
-                                       callback=acked)
-                # Commit transaction or abort it
-                topic.producer.commit_transaction()
-                topic.index += 1
-                topic.processed_count += 1
-                if topic.index % CONSUMER_LOGGING_THRESHOLD == 0:
-                    logger.debug(
-                        f"..sent {topic.index} to {topic.target_topic_name}")
-            except ck.KafkaException:
-                # In case of any exception, abort it
-
-                # TODO: handle retry message logic
-
-                topic.producer.abort_transaction()
-                logger.warning(f"Transaction {topic.transaction_id} aborted")
-
-            # save time for this message
-            topic.last_message_ts = datetime.now().timestamp()
-
-            # exit if terminate flag is set
-            if topic.terminate:
-                logger.warning("Got terminate signal. Exiting")
-                break
-        # Make sure all messages being delivered
-        topic.producer.flush()
-
         # Return topic meta
         return topic
 
@@ -829,54 +515,47 @@ class StreamVerifier():
         """
         self.logger.info("Initializing consumers")
         self.total_messages = -1
-        for name in self.workload_config.topic_names_consume:
-            # Instanciate validator
-            validators = MessageValidators()
-            # reset validator
-            validators.is_numbered_sequence(-1)
-            topic_config = {
-                "id": self.topic_id,
-                "source_topic_name": name,
-                "target_topic_name": name,
-                # 0 means consume all messages
-                "total_messages": 0,
-                # consumed messages so far
-                "index": 0,
-                "processed_count": 0,
-                "partitions_eof": set(),
-                # First message in batch
-                "first_message_ts": datetime.now().timestamp(),
-                # time when last message consumed
-                "last_message_ts": datetime.now().timestamp(),
-                # max time between consuming messages
-                "consume_timeout_s": app_config.consume_timeout_s,
-                # consumer config
-                "consumer_config": {
-                    'bootstrap.servers': self.brokers,
-                    'group.id': self.workload_config.topic_group_id,
-                    'auto.offset.reset': 'earliest',
-                    'enable.auto.commit': False,
-                    'enable.partition.eof': True,
-                },
-                # EOF flag
-                "reached_eof": False,
-                # termination flag
-                "terminate": False,
-                "errors": [],
-                "msgs_timings": [],
-                # This is consume topic action,
-                # No generation or transform needed
-                "message_generator": None,
-                "message_validator": validators.is_numbered_sequence,
-                "message_transform": None,
+        # Instanciate validator
+        validators = MessageValidators()
+        # reset validator
+        validators.is_numbered_sequence(-1)
+        topic_config = {
+            # 0 means consume all messages
+            "total_messages": 0,
+            # consumed messages so far
+            "index": 0,
+            "processed_count": 0,
+            "partitions_eof": set(),
+            # First message in batch
+            "first_message_ts": datetime.now().timestamp(),
+            # time when last message consumed
+            "last_message_ts": datetime.now().timestamp(),
+            # consumer config
+            "consumer_config": {
+                'bootstrap.servers': self.brokers,
+                'group.id': GROUP_ID,
+                'auto.offset.reset': 'earliest',
+                'enable.auto.commit': False,
+                'enable.partition.eof': True,
+            },
+            # EOF flag
+            "reached_eof": False,
+            # termination flag
+            "terminate": False,
+            "errors": [],
+            "msgs_timings": [],
+            # This is consume topic action,
+            # No generation or transform needed
+            "message_generator": None,
+            "message_validator": validators.is_numbered_sequence,
+            "message_transform": None,
 
-                # not used, but needs to be filled
-                "msgs_per_transaction": 1,
-                "producer": None,
-                "msgs_rate_ms": self.msgs_rate_ms
-            }
-            t = TopicStatus(**topic_config)
-            self.topics[t.source_topic_name] = t
+            # not used, but needs to be filled
+            "msgs_per_transaction": 1,
+            "producer": None,
+            "msgs_rate_ms": self.msgs_rate_ms
+        }
+        self.topic_status = TopicStatus(**topic_config)
         return
 
     def consume(self, wait=True):
@@ -914,7 +593,7 @@ class StreamVerifier():
 
         if topic.reached_eof:
             # Just skip it, nothing consumed
-            logger.debug(f"...topic {topic.source_topic_name} already at eof")
+            logger.debug(f"...topic {TOPIC_SOURCE} already at eof")
             return topic
 
         topic.first_message_ts = datetime.now().timestamp()
@@ -923,7 +602,7 @@ class StreamVerifier():
         try:
             # Recent changes offers use of subscribe
             # regardless of transactions and partitions
-            consumer.subscribe([topic.source_topic_name])
+            consumer.subscribe([TOPIC_SOURCE])
             topic.last_message_ts = datetime.now().timestamp()
             while True:
                 # calculate elapsed time
@@ -932,7 +611,7 @@ class StreamVerifier():
                 # Exit on timeout
                 if _since_last_msg_ms > topic.consume_timeout_s:
                     logger.error("Timeout consuming messages "
-                                 f"from {topic.source_topic_name}")
+                                 f"from {TOPIC_SOURCE}")
                     break
 
                 # Poll for the message
@@ -952,7 +631,7 @@ class StreamVerifier():
                     # If not EOF, save the error and exit
                     else:
                         logger.error("Failed to consume message from "
-                                     f"'{topic.source_topic_name}': "
+                                     f"'{TOPIC_SOURCE}': "
                                      f"{msg.error().str()}")
                         topic.errors.append(msg.error().str())
                         break
@@ -994,7 +673,7 @@ class StreamVerifier():
                     # log only milestones to eliminate IO stress
                     if topic.index % CONSUMER_LOGGING_THRESHOLD == 0:
                         logger.debug(f"...consumed {topic.index} messages "
-                                     f"from {topic.source_topic_name}")
+                                     f"from {TOPIC_SOURCE}")
 
                 # exit if terminate flag is set
                 if topic.terminate:
@@ -1015,58 +694,51 @@ class StreamVerifier():
         """
         self.logger.info("Initializing topic pairs for atomic processing")
         self.total_messages = -1
-        for source_topic_name, target_topic_name \
-                in self.workload_config.topic_name_pairs:
-            topic_config = {
-                "id": self.topic_id,
-                "source_topic_name": source_topic_name,
-                "target_topic_name": target_topic_name,
-                # 0 means consume all messages
-                "total_messages": 0,
-                # consumed messages so far
-                "index": 0,
-                "processed_count": 0,
-                "partitions_eof": set(),
-                # First message in batch
-                "first_message_ts": datetime.now().timestamp(),
-                # time when last message consumed
-                "last_message_ts": datetime.now().timestamp(),
-                # max time between consuming messages
-                "consume_timeout_s": app_config.consume_timeout_s,
-                # consumer config
-                "consumer_config": {
-                    "bootstrap.servers": self.brokers,
-                    "group.id": self.workload_config.topic_group_id,
-                    "auto.offset.reset": "earliest",
-                    "enable.auto.commit": False,
-                    "enable.partition.eof": True,
-                    "isolation.level": "read_committed"
-                },
-                # EOF flag
-                "reached_eof": False,
-                # termination flag
-                "terminate": False,
-                "errors": [],
-                "msgs_timings": [],
-                # how much messages to process per transaction
-                "msgs_per_transaction": app_config.msg_per_txn,
-                "producer": None,
-                "msgs_rate_ms": self.msgs_rate_ms,
 
-                # This is atomic topic action,
-                # No generation or validation is needed
-                # Also, transformations is optional
-                "message_generator": None,
-                "message_validator": None,
-                "message_transform": None,
-            }
-            t = TopicStatus(**topic_config)
-            t.producer = ck.Producer({
-                'bootstrap.servers': self.brokers,
-                'transactional.id': t.transaction_id
-            })
-            t.producer.init_transactions()
-            self.topics[t.source_topic_name] = t
+        topic_config = {
+            # 0 means consume all messages
+            "total_messages": 0,
+            # consumed messages so far
+            "index": 0,
+            "processed_count": 0,
+            "partitions_eof": set(),
+            # max time between consuming messages
+            "consume_timeout_s": app_config.consume_timeout_s,
+            # consumer config
+            "consumer_config": {
+                "bootstrap.servers": self.brokers,
+                "group.id": GROUP_ID,
+                "auto.offset.reset": "earliest",
+                "enable.auto.commit": False,
+                "enable.partition.eof": True,
+                "isolation.level": "read_committed"
+            },
+            # EOF flag
+            "reached_eof": False,
+            # termination flag
+            "terminate": False,
+            "errors": [],
+            "msgs_timings": [],
+            # how much messages to process per transaction
+            "msgs_per_transaction": app_config.msg_per_txn,
+            "producer": None,
+            "msgs_rate_ms": self.msgs_rate_ms,
+
+            # This is atomic topic action,
+            # No generation or validation is needed
+            # Also, transformations is optional
+            "message_generator": None,
+            "message_validator": None,
+            "message_transform": None,
+        }
+        self.topic_status = TopicStatus(**topic_config)
+        self.topic_status.producer = ck.Producer({
+            'bootstrap.servers':
+            self.brokers,
+            'transactional.id':
+            "stream-tx-id"
+        })
+        self.topic_status.producer.init_transactions()
         return
 
     def atomic_produce(self, wait=True):
@@ -1085,15 +757,10 @@ class StreamVerifier():
 
     def _consume_atomic_produce(self, logger: logging.Logger,
                                 topic: TopicStatus) -> TopicStatus:
-        def time_since_last_msg_ms() -> int:
-            diff_ms = datetime.now().timestamp() - topic.last_message_ts
-            return int(diff_ms * 1000)
 
-        topic.first_message_ts = datetime.now().timestamp()
         consumer = ck.Consumer(topic.consumer_config)
         active_tx = False
         try:
-            logger.debug(f"...processing {topic.source_topic_name}")
 
             def on_assign(consumer, partitions):
                 logger.debug(f"[{topic.transaction_id}] Assigned {partitions}")
@@ -1106,26 +773,13 @@ class StreamVerifier():
                     topic.producer.abort_transaction()
                     active_tx = False
 
-            consumer.subscribe([topic.source_topic_name],
+            consumer.subscribe([TOPIC_SOURCE],
                                on_assign=on_assign,
                                on_revoke=on_revoke)
 
             processed_count = 0
-            # Reset message timing
-            topic.last_message_ts = datetime.now().timestamp()
             while True:
-                # Handle message rate
-                self.ensure_message_rate(topic.msgs_rate_ms,
-                                         topic.last_message_ts, logger)
-
-                # calculate elapsed time
-                _since_last_msg_ms = time_since_last_msg_ms()
-                # Exit on timeout
-                if _since_last_msg_ms > topic.consume_timeout_s * 1000:
-                    logger.error("Timeout consuming messages "
-                                 f"from {topic.source_topic_name}")
-                    break
-
+                # Just wrap the whole thing in a timeout.
                 msg = consumer.poll(timeout=app_config.consume_poll_timeout)
                 if msg is not None:
                     err = msg.error()
@@ -1139,7 +793,7 @@ class StreamVerifier():
                             break
                         else:
                             logger.error("Failed to consume messages "
-                                         f"from {topic.source_topic_name}")
+                                         f"from {TOPIC_SOURCE}")
                             topic.errors.append(err.str())
                             break
                     if not active_tx:
@@ -1156,12 +810,10 @@ class StreamVerifier():
                         t_key = msg.key().decode()
                         t_value = msg.value().decode()
 
-                    topic.producer.produce(topic.target_topic_name,
+                    topic.producer.produce(TOPIC_TARGET,
                                            value=t_value,
                                            key=t_key,
                                            partition=msg.partition())
-                    # Save message timestamp on successfull produce
-                    topic.last_message_ts = datetime.now().timestamp()
                     # Commit if reached msgs per tx
                     if topic.index % topic.msgs_per_transaction == 0:
                         logger.debug(
@@ -1224,7 +876,7 @@ class StreamVerifier():
     def get_high_watermarks(self, topic_names: list) -> dict:
         cfg = {
             'bootstrap.servers': self.brokers,
-            'group.id': self.workload_config.topic_group_id,
+            'group.id': GROUP_ID,
             'auto.offset.reset': 'latest',
         }
         topic_hwms = {}
@@ -1246,82 +898,6 @@ class StreamVerifier():
                 topic_hwms[name] = hwms
         return topic_hwms
 
-    def _calculate_stats(self) -> dict:
-        FIRST = 0
-        LAST = 1
-        COUNT = 2
-
-        msg_total = 0
-        indices = []
-        intervals = []
-        per_thread_rates = []
-        # Collected message rate timings are for individual threads
-        for t in self.topics.values():
-            if self.produce_thread is not None:
-                msg_total += t.index
-            elif self.consume_thread is not None:
-                msg_total += t.index
-            elif self.atomic_thread is not None:
-                msg_total += t.index
-            indices += [t.index]
-            # Prepare rates
-            for intvl in t.msgs_timings:
-                # Calculate rate for this time interval for this thread
-                rate = intvl[COUNT] / (intvl[LAST] - intvl[FIRST])
-                if rate > 0:
-                    per_thread_rates.append(rate)
-                else:
-                    # just ignore empty intervals
-                    continue
-                # Calculate midpoint
-                mid_ts = (intvl[FIRST] + intvl[LAST]) / 2
-                # Search if calculated midpoint falls into intevals
-                # that is already saved
-                found = False
-                for all_i in intervals:
-                    if mid_ts > all_i[FIRST] and mid_ts < all_i[LAST]:
-                        # add processed count
-                        all_i[COUNT] += intvl[COUNT]
-                        found = True
-                if not found:
-                    # No such interval exists, add it
-                    # Since timestamps are in ascending order
-                    # creating intervals in reverse will result in
-                    # O(N log N) complexity comparing to O(N^2) if
-                    # append would be used
-                    intervals.insert(0, [
-                        np.floor(intvl[FIRST]),
-                        np.ceil(intvl[LAST]), intvl[COUNT]
-                    ])
-        # Extract rates for all threads per interval
-        all_threads_rates = []
-        for i in intervals:
-            rate = i[COUNT] / (i[LAST] - i[FIRST])
-            if rate > 0:
-                all_threads_rates.append(rate)
-        # Add 0 if no values present
-        if not all_threads_rates:
-            all_threads_rates.append(0)
-        if not per_thread_rates:
-            per_thread_rates.append(0)
-        # Ultimately, we get per-thread rates and all-thread rate
-        return {
-            "processed_messages": msg_total,
-            "indices": indices,
-            "per_thread_per_sec_min": np.min(per_thread_rates),
-            "per_thread_per_sec_avg": np.average(per_thread_rates),
-            "per_thread_per_sec_max": np.max(per_thread_rates),
-            "per_thread_per_sec_med": np.median(per_thread_rates),
-            "per_thread_per_sec_p90": np.percentile(per_thread_rates, 90),
-            "per_thread_per_sec_p95": np.percentile(per_thread_rates, 95),
-            "all_per_sec_min": np.min(all_threads_rates),
-            "all_per_sec_avg": np.average(all_threads_rates),
-            "all_per_sec_max": np.max(all_threads_rates),
-            "all_per_sec_med": np.median(all_threads_rates),
-            "all_per_sec_p90": np.percentile(all_threads_rates, 90),
-            "all_per_sec_p95": np.percentile(all_threads_rates, 95),
-        }
-
     def status(self, name: str = ""):
         """Provides current processing status
 
@@ -1332,7 +908,7 @@ class StreamVerifier():
             dict: Dict with status
         """
 
-        response = {"topics": {}, "offsets": {}, "workload_config": {}}
+        response = {"offsets": {}}
         # specific topic if requested
         if len(name) > 0:
             # include topic as asked
@@ -1341,10 +917,8 @@ class StreamVerifier():
                 "offsets": self.get_high_watermarks([name])
             }
 
-        response['offsets'].update(
-            self.get_high_watermarks(self.workload_config.topic_names_produce))
-        response['offsets'].update(
-            self.get_high_watermarks(self.workload_config.topic_names_consume))
+        response['offsets'].update(self.get_high_watermarks([TOPIC_SOURCE]))
+        response['offsets'].update(self.get_high_watermarks([TOPIC_TARGET]))
 
         # Collect errors
         response['errors'] = []  # type: ignore
@@ -1353,16 +927,11 @@ class StreamVerifier():
                 response['errors'].append(f"[{k}] {error}")
 
         # topics configuration to use in POST command
-        topics_cfg = vars(self.workload_config)
+        topics_cfg = {}
         topics_cfg.update({
             "msg_rate_limit": self.message_rate_limit,
             "msg_total": self.total_messages
         })
-        response['workload_config'] = topics_cfg
-        # Total stats and delivery errors
-        # 'indices' is a list of current indexes in each topic
-        response['stats'] = self._calculate_stats()
-        response['delivery_errors'] = self.delivery_reports
         return response
 
     def terminate(self):
@@ -1396,15 +965,6 @@ class StreamVerifierWeb(StreamVerifier):
     On GET returns current status JSON
     {
         "topics": {},
-        "workload_config": {
-            "topic_group_id": "group-stream-verifier-tx",
-            "topic_prefix_produce": "stream-topic-src",
-            "topic_prefix_consume": "stream-topic-dst",
-            "topic_count": 16,
-            "consume_timeout_s": 60,
-            "msg_rate_limit": 0,
-            "msg_total": 256
-        },
         "stats": {
             "total_messages": 0,
             "indices": []
@@ -1488,10 +1048,6 @@ class StreamVerifierProduce(StreamVerifierWeb):
 
     On POST runs produce command, can use cfg from status JSON.
     {
-        "topic_group_id": "group-stream-verifier-tx",
-        "topic_prefix_produce": "stream-topic-src",
-        "topic_prefix_consume": "stream-topic-dst",
-        "topic_count": 16,
         "consume_timeout_s": 60,
         "msg_rate_limit": 0,
         "msg_total": 256
@@ -1517,22 +1073,13 @@ class StreamVerifierProduce(StreamVerifierWeb):
             return
 
         # update topic config
-        topics_cfg_keys = list(vars(self.workload_config).keys())
-        topics_cfg_keys += ["msg_rate_limit", "msg_total"]
+        topics_cfg_keys = ["msg_total"]
         if not self._validate_request(topics_cfg_keys, [], req, resp):
             # response is already populated inside validate_request
             return
         else:
-            # Update topic configs
-            self.message_rate = req.media['msg_rate_limit'] \
-                if 'msg_rate_limit' in req.media else app_config.msg_rate_limit
             self.total_messages = req.media['msg_total'] \
                 if 'msg_total' in req.media else app_config.msg_total
-            if 'topic_prefix_produce' in req.media:
-                self.workload_config.topic_prefix_produce = req.media[
-                    'topic_prefix_produce']
-            if 'topic_count' in req.media:
-                self.workload_config.topic_count = req.media['topic_count']
             # start producers
             self.init_producers()
             self.produce(wait=False)
@@ -1547,12 +1094,7 @@ class StreamVerifierConsume(StreamVerifierWeb):
 
     On POST runs consume command, can use cfg from status JSON.
     {
-        "topic_group_id": "group-stream-verifier-tx",
-        "topic_prefix_produce": "stream-topic-src",
-        "topic_prefix_consume": "stream-topic-dst",
-        "topic_count": 16,
         "consume_timeout_s": 60,
-        "msg_rate_limit": 0,
         "msg_total": 256
     }
 
@@ -1576,18 +1118,7 @@ class StreamVerifierConsume(StreamVerifierWeb):
             return
 
         # update topic config
-        topics_cfg_keys = ["topic_prefix_consume", "topic_count"]
         forbidden = ["msg_rate_limit", "msg_total"]
-        if not self._validate_request(topics_cfg_keys, forbidden, req, resp):
-            # response is already populated inside validate_request
-            return
-
-        # Update topic configs
-        if 'topic_prefix_consume' in req.media:
-            self.workload_config.topic_prefix_consume = req.media[
-                'topic_prefix_consume']
-        if 'topic_count' in req.media:
-            self.workload_config.topic_count = req.media['topic_count']
         # start consumers
         self.init_consumers()
         self.consume(wait=False)
@@ -1602,12 +1133,7 @@ class StreamVerifierAtomic(StreamVerifierWeb):
 
     On POST runs atomic consume/produce command, can use cfg from status JSON.
     {
-        "topic_group_id": "group-stream-verifier-tx",
-        "topic_prefix_produce": "stream-topic-src",
-        "topic_prefix_consume": "stream-topic-dst",
-        "topic_count": 16,
         "consume_timeout_s": 60,
-        "msg_rate_limit": 0,
         "msg_total": 256
     }
 
@@ -1631,25 +1157,11 @@ class StreamVerifierAtomic(StreamVerifierWeb):
             return
 
         # update topic config
-        topics_cfg_keys = list(vars(self.workload_config).keys())
-        topics_cfg_keys += ["msg_rate_limit", "msg_total"]
+        topics_cfg_keys = ["msg_rate_limit", "msg_total"]
         if not self._validate_request(topics_cfg_keys, [], req, resp):
             # response is already populated inside validate_request
             return
-        elif req.media['topic_prefix_produce'] == req.media[
-                'topic_prefix_consume']:
-            self._http_400(["Source and taget topics can't be equal"], resp)
-            return
         else:
-            # Update topic configs
-            if 'topic_prefix_consume' in req.media:
-                self.workload_config.topic_prefix_consume = req.media[
-                    'topic_prefix_consume']
-            if 'topic_prefix_produce' in req.media:
-                self.workload_config.topic_prefix_produce = req.media[
-                    'topic_prefix_produce']
-            if 'topic_count' in req.media:
-                self.workload_config.topic_count = req.media['topic_count']
             # start consumers
             self.init_atomic_produce()
             self.atomic_produce(wait=False)
@@ -1737,26 +1249,18 @@ def process_command(command, cfg, ioclass):
         if command == COMMAND_PRODUCE:
             logger.info("Init Produce command")
             verifier.init_producers()
-            _rate = "no rate limiting"
-            if cfg.msg_rate_limit > 0:
-                _rate = f"{cfg.msg_rate_limit}/sec"
             logger.info(f"Starting to produce {cfg.msg_total} messages "
-                        f"to {cfg.topic_count} topics, {_rate}")
+                        f"to {cfg.topic_count} topics")
             verifier.produce()
             data = verifier.status()
         elif command == COMMAND_ATOMIC:
             logger.info("Init Atomic Consume and Produce command")
             verifier.init_atomic_produce()
-            logger.info("Starting to consume from "
-                        f"{cfg.topic_prefix_consume}* and produce to"
-                        f"{cfg.topic_prefix_produce}*")
             verifier.atomic_produce()
             data = verifier.status()
         elif command == COMMAND_CONSUME:
             logger.info("Init Consume command")
             verifier.init_consumers()
-            logger.info("Starting to consume all messages from "
-                        f"{cfg.topic_prefix_consume}*")
             verifier.consume()
             data = verifier.status()
     except (ck.KafkaException) as e:
@@ -1797,18 +1301,6 @@ def main(args):
     logger.info(f"{title}")
     logger.info(f"Using log level {logging.getLevelName(log_level)}")
 
-    if args.command in [COMMAND_CONSUME, COMMAND_ATOMIC]:
-        isvalid, error = validate_option("--consume-stop-criteria",
-                                         args.consume_stop_criteria,
-                                         consume_stop_options)
-        if not isvalid:
-            logger.error(error)
-            sys.exit(1)
-    elif args.command == COMMAND_ATOMIC:
-        if args.topic_prefix_produce == args.topic_prefix_consume:
-            logger.error("Source and taget topic prefixes can't be equal")
-            sys.exit(1)
-
     app_config.update(vars(args))
     if args.command == COMMAND_SERVICE:
         # Run app as a service
@@ -1845,32 +1337,9 @@ if __name__ == '__main__':
                         default=4,
                         help="Number of threads to process messages")
 
-    parser.add_argument("-g",
-                        "--group-id",
-                        dest="topic_group_id",
-                        default="group-stream-verifier-tx",
-                        help="Group it to use")
-
     subparsers = parser.add_subparsers(dest='command', required=True)
     parser_produce = subparsers.add_parser(COMMAND_PRODUCE)
-    parser_produce.add_argument("--topic-prefix-produce",
-                                dest="topic_prefix_produce",
-                                default="stream-topic-src",
-                                help="Topic prefix to use when creating. "
-                                "Formats: '<prefix>-<sequence_number>")
 
-    parser_produce.add_argument('-c',
-                                '--topic-count',
-                                dest="topic_count",
-                                default=4,
-                                type=int,
-                                help="Number of topics to create")
-
-    parser_produce.add_argument('--rps',
-                                dest='msg_rate_limit',
-                                default=0,
-                                type=int,
-                                help="Producer's message rate per sec")
     parser_produce.add_argument('-t',
                                 '--total',
                                 dest='msg_total',
@@ -1879,35 +1348,6 @@ if __name__ == '__main__':
                                 help="Producer's message rate per sec")
 
     parser_consume = subparsers.add_parser(COMMAND_CONSUME)
-    parser_consume.add_argument("--topic-prefix-consume",
-                                dest="topic_prefix_consume",
-                                default="stream-topic-dst",
-                                help="Topic prefix to use when creating. "
-                                "Formats: '<prefix>-<sequence_number>")
-
-    parser_consume.add_argument('-c',
-                                '--topic-count',
-                                dest="topic_count",
-                                default=16,
-                                type=int,
-                                help="Number of topics to create")
-
-    parser_consume.add_argument('--consume-stop-criteria',
-                                dest="consume_stop_criteria",
-                                default="sleep",
-                                type=str,
-                                help="When to stop consumption: "
-                                "'eof' - on first partition EOF, "
-                                "'sleep' - on no new messages received "
-                                "after sleep time after EOF, "
-                                "'continuos' - stop only on terminate signal")
-
-    parser_consume.add_argument('--consume-sleep-timeout',
-                                dest="consume_sleep_time_s",
-                                default=60,
-                                type=int,
-                                help="Time to sleep after EOF in sleep "
-                                "stop criteria")
 
     parser_atomic = subparsers.add_parser(COMMAND_ATOMIC)
     parser_atomic.add_argument('-t',
@@ -1916,46 +1356,6 @@ if __name__ == '__main__':
                                default=256,
                                type=int,
                                help="Producer's message rate per sec")
-    parser_atomic.add_argument('--rps',
-                               dest='msg_rate_limit',
-                               default=0,
-                               type=int,
-                               help="Producer's message rate per sec")
-    parser_atomic.add_argument("--topic-prefix-produce",
-                               dest="topic_prefix_produce",
-                               default="stream-topic-src",
-                               help="Topic prefix to use when creating. "
-                               "Formats: '<prefix>-<sequence_number>")
-
-    parser_atomic.add_argument("--topic-prefix-consume",
-                               dest="topic_prefix_consume",
-                               default="stream-topic-src",
-                               help="Topic prefix to use when creating. "
-                               "Formats: '<prefix>-<sequence_number>")
-
-    parser_atomic.add_argument('-c',
-                               '--topic-count',
-                               dest="topic_count",
-                               default=16,
-                               type=int,
-                               help="Number of topics to create")
-
-    parser_atomic.add_argument('--consume-stop-criteria',
-                               dest="consume_stop_criteria",
-                               default="sleep",
-                               type=str,
-                               help="When to stop consumption: "
-                               "'eof' - on first partition EOF, "
-                               "'sleep' - on no new messages received "
-                               "after sleep time after EOF, "
-                               "'continuos' - stop only on terminate signal")
-
-    parser_atomic.add_argument('--consume-sleep-timeout',
-                               dest="consume_sleep_time_s",
-                               default=60,
-                               type=int,
-                               help="Time to sleep after EOF in sleep "
-                               "stop criteria")
 
     parser_service = subparsers.add_parser(COMMAND_SERVICE)
     parser_service.add_argument('--port',
