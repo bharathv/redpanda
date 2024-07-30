@@ -26,6 +26,7 @@
 #include "raft/fundamental.h"
 #include "raft/persisted_stm.h"
 #include "raft/state_machine_base.h"
+#include "random/generators.h"
 #include "ssx/future-util.h"
 #include "storage/parser_utils.h"
 #include "storage/record_batch_builder.h"
@@ -912,6 +913,9 @@ ss::future<result<kafka_result>> rm_stm::do_idempotent_replicate(
   raft::replicate_options opts,
   ss::lw_shared_ptr<available_promise<>> enqueued,
   ssx::semaphore_units& units) {
+    if (random_generators::get_int(10) > 5) {
+        co_return cluster::errc::timeout;
+    }
     auto request = producer->try_emplace_request(bid, synced_term);
     if (!request) {
         co_return request.error();
@@ -970,6 +974,9 @@ ss::future<result<kafka_result>> rm_stm::idempotent_replicate(
     try {
         auto synced_term = _insync_term;
         auto producer = maybe_create_producer(bid.pid);
+        if (bid.pid.epoch > producer->id().epoch) {
+            producer->reset_epoch(bid.pid.epoch);
+        }
         co_return co_await producer->run_with_lock(
           [&](ssx::semaphore_units units) {
               return idempotent_replicate(

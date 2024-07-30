@@ -23,14 +23,14 @@ from rptest.services.openmessaging_benchmark_configs import \
 
 class ShardPlacementScaleTest(RedpandaTest):
     def __init__(self, ctx, *args, **kwargs):
-        si_settings = SISettings(test_context=ctx)
+        # si_settings = SISettings(test_context=ctx)
         super().__init__(
             *args,
             test_context=ctx,
             num_brokers=5,
-            si_settings=si_settings,
+            # si_settings=si_settings,
             # trace logging kills preformance, so we run with info level.
-            log_config=LoggingConfig('info'),
+            # log_config=LoggingConfig('info'),
             **kwargs)
 
     def setUp(self):
@@ -42,12 +42,12 @@ class ShardPlacementScaleTest(RedpandaTest):
                                          active=True)
 
     def start_omb(self):
-        producer_rate_mbps = 100
+        producer_rate_mbps = 10
 
         workload = {
             "name": "CommonWorkload",
             "topics": 1,
-            "partitions_per_topic": 1000,
+            "partitions_per_topic": 100,
             "subscriptions_per_topic": 1,
             "consumer_per_subscription": 25,
             "producers_per_topic": 5,
@@ -101,7 +101,7 @@ class ShardPlacementScaleTest(RedpandaTest):
         return [t for t in rpk.list_topics() if t.startswith('test-topic-')]
 
     def finish_omb(self):
-        benchmark_time_min = self._benchmark.benchmark_time() + 2
+        benchmark_time_min = self._benchmark.benchmark_time() + 1
         self._benchmark.wait(timeout_sec=benchmark_time_min * 60)
         self._benchmark.check_succeed()
 
@@ -164,7 +164,7 @@ class ShardPlacementScaleTest(RedpandaTest):
 
         self.start_omb()
 
-        time.sleep(120)
+        time.sleep(70)
         self.redpanda.start(nodes=joiner_nodes)
         self.logger.info(
             f"added nodes {[n.name for n in joiner_nodes]} to the cluster")

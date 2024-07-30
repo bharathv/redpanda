@@ -135,18 +135,22 @@ bool requests::is_valid_sequence(seq_t incoming) const {
       || (last_req && last_req.value()->_last_sequence == std::numeric_limits<seq_t>::max() && incoming == 0);
 }
 
+void requests::reset() {
+    while (!_inflight_requests.empty()) {
+        if (!_inflight_requests.front()->has_completed()) {
+            _inflight_requests.front()->set_error(errc::timeout);
+        }
+        _inflight_requests.pop_front();
+    }
+    _finished_requests.clear();
+}
+
 result<request_ptr> requests::try_emplace(
   seq_t first, seq_t last, model::term_id current, bool reset_sequences) {
     if (reset_sequences) {
         // reset all the sequence tracking state, avoids any sequence
         // checks for sequence tracking.
-        while (!_inflight_requests.empty()) {
-            if (!_inflight_requests.front()->has_completed()) {
-                _inflight_requests.front()->set_error(errc::timeout);
-            }
-            _inflight_requests.pop_front();
-        }
-        _finished_requests.clear();
+        reset();
     } else {
         // gc and fail any inflight requests from old terms
         // these are guaranteed to be failed because of sync() guarantees
@@ -328,6 +332,14 @@ bool producer_state::can_evict() {
     return true;
 }
 
+void producer_state::reset_epoch(model::producer_epoch new_epoch) {
+    vassert(new_epoch > _id.get_epoch(), "Invalid epoch bump");
+    vlog(
+      _logger.info, "[{}] client requested epoch bump to {}", *this, new_epoch);
+    _id = model::producer_identity(_id.get_id()(), new_epoch());
+    _requests.reset();
+}
+
 result<request_ptr> producer_state::try_emplace_request(
   const model::batch_identity& bid, model::term_id current_term, bool reset) {
     if (bid.first_seq > bid.last_seq) {
@@ -364,6 +376,9 @@ void producer_state::apply_data(
     auto bid = model::batch_identity::from(header);
     if (!bid.is_idempotent() || _evicted) {
         return;
+    }
+    if (bid.pid.epoch > _id.epoch) {
+        reset_epoch(bid.pid.get_epoch());
     }
     _requests.stm_apply(bid, header.ctx.term, offset);
     if (bid.is_transactional) {

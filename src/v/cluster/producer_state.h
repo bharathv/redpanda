@@ -115,6 +115,7 @@ public:
 
     void shutdown();
 
+
     bool operator==(const requests&) const;
     friend std::ostream& operator<<(std::ostream&, const requests&);
 
@@ -126,6 +127,7 @@ private:
     bool is_valid_sequence(seq_t incoming) const;
     std::optional<request_ptr> last_request() const;
     void gc_requests_from_older_terms(model::term_id current);
+    void reset();
     ss::chunked_fifo<request_ptr, chunk_size> _inflight_requests;
     ss::chunked_fifo<request_ptr, chunk_size> _finished_requests;
     friend producer_state;
@@ -164,6 +166,8 @@ public:
     producer_state& operator=(producer_state&& other) noexcept = delete;
     ~producer_state() noexcept = default;
     bool operator==(const producer_state& other) const;
+
+    void reset_epoch(model::producer_epoch new_epoch);
 
     friend std::ostream& operator<<(std::ostream& o, const producer_state&);
 
