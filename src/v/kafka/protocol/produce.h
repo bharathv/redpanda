@@ -91,7 +91,6 @@ struct produce_response final {
                 if (p.error_code != error_code::none) {
                     p.base_offset = model::offset(-1);
                     p.log_append_time_ms = model::timestamp(-1);
-                    p.log_start_offset = model::offset(-1);
                 }
             }
         }

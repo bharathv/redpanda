@@ -873,8 +873,8 @@ class TransactionsTest(RedpandaTest, TransactionsMixin):
     def check_pids_overflow_test(self):
         rpk = RpkTool(self.redpanda)
         max_concurrent_producer_ids = 10
-        ans = rpk.cluster_config_set("max_concurrent_producer_ids",
-                                     str(max_concurrent_producer_ids))
+        rpk.cluster_config_set("max_concurrent_producer_ids",
+                               str(max_concurrent_producer_ids))
 
         topic = self.topics[0].name
 
@@ -905,17 +905,6 @@ class TransactionsTest(RedpandaTest, TransactionsMixin):
                    backoff_sec=2,
                    err_msg="Producers not evicted in time")
 
-        try:
-            _produce_one(producers[0], 0)
-            assert False, "We can not produce after cleaning in rm_stm"
-        except ck.cimpl.KafkaException as e:
-            kafka_error = e.args[0]
-            kafka_error.code(
-            ) == ck.cimpl.KafkaError.OUT_OF_ORDER_SEQUENCE_NUMBER
-
-        # validate that the producers are evicted with LRU policy,
-        # starting from this producer there should be no sequence
-        # number errors as those producer state should not be evicted
         last_not_evicted_producer_idx = max_producers - max_concurrent_producer_ids + 1
         for i in range(last_not_evicted_producer_idx, len(producers)):
             _produce_one(producers[i], i)

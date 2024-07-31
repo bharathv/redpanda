@@ -128,7 +128,8 @@ ss::future<model::offset> rm_stm::bootstrap_committed_offset() {
       .then([this] { return _raft->committed_offset(); });
 }
 
-producer_ptr rm_stm::maybe_create_producer(model::producer_identity pid) {
+producer_ptr rm_stm::maybe_create_producer(
+  model::producer_identity pid, bool create_if_not_exists) {
     // Double lookup because of two reasons
     // 1. we are forced to use a ptr as map value_type because producer_state is
     // not movable
@@ -137,6 +138,9 @@ producer_ptr rm_stm::maybe_create_producer(model::producer_identity pid) {
     auto it = _producers.find(pid.get_id());
     if (it != _producers.end()) {
         return it->second;
+    }
+    if (!create_if_not_exists) {
+        return nullptr;
     }
     auto producer = ss::make_lw_shared<producer_state>(
       _ctx_log, pid, _raft->group(), [pid, this] {
@@ -973,7 +977,25 @@ ss::future<result<kafka_result>> rm_stm::idempotent_replicate(
     }
     try {
         auto synced_term = _insync_term;
-        auto producer = maybe_create_producer(bid.pid);
+        auto producer = maybe_create_producer(
+          bid.pid, /*create_if_not_exists=*/bid.first_seq == 0);
+        if (!producer) {
+            // We encountered an idempotent replicate request with non zero
+            // beginning sequence _and_ we do not track the producer, this
+            // can happen if the producer got evicted or belonged to the
+            // prefix truncated part of the log and the client is retrying
+            // after a long time. Returning this error code forces the client
+            // to reset the epoch and try again (check kip-360).
+            // Disambiguating from OOOSN by using uknown_producer_id helps
+            // client reset epoch and reset things and this error code
+            // is handled by all commonly used clients (librdkafka, java, kgo).
+            vlog(
+              _ctx_log.warn,
+              "Unknown producer when attempting to replicate {}, expecting the "
+              "client to reset epoch and retry.",
+              bid);
+            co_return cluster::errc::unknown_producer_id;
+        }
         co_return co_await producer->run_with_lock(
           [&](ssx::semaphore_units units) {
               return idempotent_replicate(
