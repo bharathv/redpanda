@@ -95,7 +95,6 @@ enum class errc : int16_t {
     data_migration_already_exists,
     data_migration_invalid_resources,
     resource_is_being_migrated,
-    unknown_producer_id,
 };
 
 std::ostream& operator<<(std::ostream& o, errc err);
@@ -283,8 +282,6 @@ struct errc_category final : public std::error_category {
         case errc::resource_is_being_migrated:
             return "Requested operation can not be executed as the resource is "
                    "undergoing data migration";
-        case errc::unknown_producer_id:
-            return "Producer id not known to the broker";
         }
         return "cluster::errc::unknown";
     }

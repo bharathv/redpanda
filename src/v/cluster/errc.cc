@@ -178,8 +178,6 @@ std::ostream& operator<<(std::ostream& o, cluster::errc err) {
         return o << "cluster::errc::data_migration_invalid_resources";
     case errc::resource_is_being_migrated:
         return o << "cluster::errc::resource_is_being_migrated";
-    case errc::unknown_producer_id:
-        return o << "cluster::errc::unknown_producer_id";
     }
 }
 } // namespace cluster

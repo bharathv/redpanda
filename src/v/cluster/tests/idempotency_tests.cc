@@ -350,7 +350,7 @@ FIXTURE_TEST(test_rm_stm_prevents_odd_session_start_off, rm_stm_test_fixture) {
                  raft::replicate_options(raft::consistency_level::quorum_ack))
                .get0();
     BOOST_REQUIRE(
-      r == failure_type<cluster::errc>(cluster::errc::unknown_producer_id));
+      r == failure_type<cluster::errc>(cluster::errc::sequence_out_of_order));
 }
 
 FIXTURE_TEST(test_rm_stm_passes_immediate_retry, rm_stm_test_fixture) {

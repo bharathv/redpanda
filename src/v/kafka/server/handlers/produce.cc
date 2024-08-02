@@ -149,8 +149,6 @@ static error_code map_produce_error_code(std::error_code ec) {
             return error_code::policy_violation;
         case cluster::errc::generic_tx_error:
             return error_code::unknown_server_error;
-        case cluster::errc::unknown_producer_id:
-            return error_code::unknown_producer_id;
         default:
             return error_code::request_timed_out;
         }
@@ -183,9 +181,7 @@ static partition_produce_stages partition_append(
       .produced = stages.replicate_finished.then_wrapped(
         [partition, id, num_records = num_records, num_bytes](
           ss::future<result<raft::replicate_result>> f) {
-            produce_response::partition p{
-              .partition_index = id,
-              .log_start_offset = partition->start_offset()};
+            produce_response::partition p{.partition_index = id};
             try {
                 auto r = f.get0();
                 if (r.has_value()) {

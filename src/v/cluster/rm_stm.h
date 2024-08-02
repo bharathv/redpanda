@@ -233,8 +233,7 @@ private:
     ss::future<> do_remove_persistent_state();
     ss::future<fragmented_vector<tx::tx_range>>
       do_aborted_transactions(model::offset, model::offset);
-    tx::producer_ptr maybe_create_producer(
-      model::producer_identity, bool create_if_not_exists = true);
+    tx::producer_ptr maybe_create_producer(model::producer_identity);
     void cleanup_producer_state(model::producer_identity);
     ss::future<> reset_producers();
     ss::future<checked<model::term_id, tx::errc>> do_begin_tx(
