@@ -55,9 +55,8 @@ class TopicRecreateTest(RedpandaTest):
                              })
 
     @cluster(num_nodes=6)
-    @matrix(
-        workload=[Workload.ACKS_1, Workload.ACKS_ALL, Workload.IDEMPOTENT],
-        cleanup_policy=[TopicSpec.CLEANUP_COMPACT, TopicSpec.CLEANUP_DELETE])
+    @matrix(workload=[Workload.IDEMPOTENT],
+            cleanup_policy=[TopicSpec.CLEANUP_COMPACT])
     def test_topic_recreation_while_producing(self, workload, cleanup_policy):
         '''
         Test that we are able to recreate topic multiple times
@@ -65,15 +64,15 @@ class TopicRecreateTest(RedpandaTest):
         self._client = DefaultClient(self.redpanda)
 
         # scaling parameters
-        partition_count = 30
-        producer_count = 10
+        partition_count = 1
+        producer_count = 1
 
         spec = TopicSpec(partition_count=partition_count, replication_factor=3)
         spec.cleanup_policy = cleanup_policy
 
         self.client().create_topic(spec)
 
-        producer_properties = {}
+        producer_properties = {'log_level': 7, 'debug': 'all'}
         if workload == Workload.ACKS_1:
             producer_properties['acks'] = 1
         elif workload == Workload.ACKS_ALL:

@@ -120,7 +120,7 @@ class ProducerSwarm(Service):
 
         cmd += f" --client-spawn-wait-ms={self.CLIENT_SPAWN_WAIT_MS}"
 
-        cmd = f"RUST_LOG={self._log_level} bash /opt/remote/control/start.sh {self.EXE} \"{cmd}\""
+        cmd = f"RUST_LOG=\"librdkafka=trace\" bash /opt/remote/control/start.sh {self.EXE} \"{cmd}\""
         node.account.ssh(cmd)
         self._redpanda.wait_until(
             self.is_alive,
