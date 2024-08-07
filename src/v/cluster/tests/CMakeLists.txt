@@ -49,6 +49,15 @@ rp_test(
 )
 endforeach()
 
+find_package(RdKafka REQUIRED)
+rp_test(
+  UNIT_TEST
+  BINARY_NAME librdkafka_fixture_tests
+  SOURCES librdkafka_fixture_test.cc 
+  LIBRARIES v::seastar_testing_main v::application v::storage_test_utils v::cluster v::http_test_utils RdKafka::rdkafka RdKafka::rdkafka++
+  LABELS cluster
+)
+
 set(srcs
     distributed_kv_stm_tests.cc
     id_allocator_stm_test.cc

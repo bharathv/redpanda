@@ -313,6 +313,17 @@ public:
           .get();
     }
 
+    ss::sstring get_kafka_broker_config() const {
+        std::vector<ss::sstring> brokers;
+        brokers.reserve(_instances.size());
+        for (const auto& [_, fixture] : _instances) {
+            brokers.emplace_back(
+              fmt::format("127.0.0.1:{}", fixture.get()->kafka_port));
+        }
+        return fmt::format(
+          "{}", fmt::join(brokers.begin(), brokers.end(), ","));
+    }
+
 protected:
     redpanda_thread_fixture* instance(model::node_id id) {
         return _instances[id].get();
