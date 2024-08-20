@@ -70,6 +70,11 @@ group_manager::group_manager(
       [this]() { trigger_config_update_notification(); });
     _configuration.write_caching_flush_bytes.watch(
       [this]() { trigger_config_update_notification(); });
+    _configuration.raft_batcher_linger_ms.watch(
+      [this]() { reset_batcher_cache_flush_timer(); });
+    reset_batcher_cache_flush_timer();
+    _periodic_batcher_cache_flusher.set_callback(
+      [this] { flush_batcher_cache_all_groups(); });
     setup_metrics();
 }
 
@@ -83,6 +88,7 @@ ss::future<> group_manager::stop() {
     _metrics.clear();
     _public_metrics.clear();
     _metrics_timer.cancel();
+    _periodic_batcher_cache_flusher.cancel();
     auto f = _gate.close();
 
     f = f.then([this] { return _recovery_scheduler.stop(); });
@@ -109,7 +115,18 @@ void group_manager::set_ready() {
       });
 }
 
-ss::future<> group_manager::stop_heartbeats() { return _heartbeats.stop(); }
+void group_manager::flush_batcher_cache_all_groups(){ssx::spawn_with_gate(
+  _gate,
+  [this] {
+      return ss::max_concurrent_for_each(
+        _groups, 64, [](ss::lw_shared_ptr<consensus> raft) {
+            raft->ma return raft->ba
+        });
+  })}
+
+ss::future<> group_manager::stop_heartbeats() {
+    return _heartbeats.stop();
+}
 
 ss::future<ss::lw_shared_ptr<raft::consensus>> group_manager::create_group(
   raft::group_id id,
@@ -260,6 +277,16 @@ void group_manager::trigger_config_update_notification() {
     for (auto& group : _groups) {
         group->notify_config_update();
     }
+}
+
+void group_manager::reset_batcher_cache_flush_timer() {
+    _periodic_batcher_cache_flusher.cancel();
+    auto batcher_linger_ms
+      = config::shard_local_cfg().raft_replicate_batcher_linger_ms();
+    if (!batcher_linger_ms) {
+        return;
+    }
+    _periodic_batcher_cache_flusher.arm_periodic(batcher_linger_ms.value());
 }
 
 void group_manager::collect_learner_metrics() {

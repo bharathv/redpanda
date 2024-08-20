@@ -990,6 +990,13 @@ configuration::configuration()
       "Max size of requests cached for replication",
       {.visibility = visibility::tunable},
       1_MiB)
+  , raft_replicate_batcher_linger_ms(
+      *this,
+      "raft_replicate_batcher_linger_ms",
+      "Artificial delay induced before flushing batched replicate requests, "
+      "applies per raft group.",
+      {.visibility = visibility::tunable},
+      std::nullopt)
   , raft_learner_recovery_rate(
       *this,
       "raft_learner_recovery_rate",

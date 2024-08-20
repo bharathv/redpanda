@@ -534,6 +534,8 @@ public:
         return _configuration_manager.has_configuration_override();
     }
 
+    void flush_batcher_cache() { return _batcher.maybe_flush_in_background(); }
+
 private:
     friend replication_monitor;
     friend replicate_entries_stm;

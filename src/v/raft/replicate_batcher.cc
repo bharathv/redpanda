@@ -65,25 +65,7 @@ replicate_batcher::cache_and_wait_for_result(
          * replicate batcher stop method
          *
          */
-        if (!_flush_pending) {
-            _flush_pending = true;
-            ssx::background = ssx::spawn_with_gate_then(_bg, [this]() {
-                return _lock.get_units()
-                  .then([this](auto units) {
-                      return flush(std::move(units), false);
-                  })
-                  .handle_exception([this](const std::exception_ptr& e) {
-                      // an exception here is quite unlikely, since the flush()
-                      // method generally catches all its exceptions and
-                      // propagates them to the promises associated with the
-                      // items being flushed
-                      vlog(
-                        _ptr->_ctxlog.error,
-                        "Error in background flush: {}",
-                        e);
-                  });
-            });
-        }
+        maybe_flush_in_background();
     } catch (...) {
         // exception in caching phase
         enqueued.set_to_current_exception();
@@ -172,6 +154,24 @@ replicate_batcher::do_cache_with_backpressure(
 
     _item_cache.emplace_back(i);
     co_return i;
+}
+
+void replicate_batcher::maybe_flush_in_background() {
+    if (_flush_pending) {
+        return;
+    }
+    _flush_pending = true;
+    ssx::background = ssx::spawn_with_gate_then(_bg, [this]() {
+        return _lock.get_units()
+          .then([this](auto units) { return flush(std::move(units), false); })
+          .handle_exception([this](const std::exception_ptr& e) {
+              // an exception here is quite unlikely, since the flush()
+              // method generally catches all its exceptions and
+              // propagates them to the promises associated with the
+              // items being flushed
+              vlog(_ptr->_ctxlog.error, "Error in background flush: {}", e);
+          });
+    });
 }
 
 ss::future<> replicate_batcher::flush(
