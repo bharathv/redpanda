@@ -18,11 +18,12 @@ namespace cluster {
 std::ostream& operator<<(std::ostream& o, const commit_tx_request& r) {
     fmt::print(
       o,
-      "{{ntp {} pid {} tx_seq {} timeout {}}}",
+      "{{ntp: {} pid: {} tx_seq: {} timeout: {} coordinator term: {}}}",
       r.ntp,
       r.pid,
       r.tx_seq,
-      r.timeout);
+      r.timeout,
+      r.coordinator_term);
     return o;
 }
 
@@ -34,11 +35,12 @@ std::ostream& operator<<(std::ostream& o, const commit_tx_reply& r) {
 std::ostream& operator<<(std::ostream& o, const abort_tx_request& r) {
     fmt::print(
       o,
-      "{{ntp {} pid {} tx_seq {} timeout {}}}",
+      "{{ntp: {} pid: {} tx_seq: {} timeout: {} coordinator_term: {}}}",
       r.ntp,
       r.pid,
       r.tx_seq,
-      r.timeout);
+      r.timeout,
+      r.coordinator_term);
     return o;
 }
 
@@ -50,13 +52,15 @@ std::ostream& operator<<(std::ostream& o, const abort_tx_reply& r) {
 std::ostream& operator<<(std::ostream& o, const begin_group_tx_request& r) {
     fmt::print(
       o,
-      "{{ntp {} group_id {} pid {} tx_seq {} timeout {} tm_partition: {}}}",
+      "{{ntp: {} group_id: {} pid: {} tx_seq: {} timeout: {} tm_partition: {} "
+      "coordinator_term: {}}}",
       r.ntp,
       r.group_id,
       r.pid,
       r.tx_seq,
       r.timeout,
-      r.tm_partition);
+      r.tm_partition,
+      r.coordinator_term);
     return o;
 }
 
@@ -68,7 +72,7 @@ std::ostream& operator<<(std::ostream& o, const begin_group_tx_reply& r) {
 std::ostream& operator<<(std::ostream& o, const prepare_group_tx_request& r) {
     fmt::print(
       o,
-      "{{ntp {} group_id {} etag {} pid {} tx_seq {} timeout {}}}",
+      "{{ntp: {} group_id: {} etag: {} pid: {} tx_seq: {} timeout: {}}}",
       r.ntp,
       r.group_id,
       r.etag,
@@ -86,12 +90,14 @@ std::ostream& operator<<(std::ostream& o, const prepare_group_tx_reply& r) {
 std::ostream& operator<<(std::ostream& o, const commit_group_tx_request& r) {
     fmt::print(
       o,
-      "{{ntp {} pid {} tx_seq {} group_id {} timeout {}}}",
+      "{{ntp: {} pid: {} tx_seq: {} group_id: {} timeout: {} coordinator_term: "
+      "{}}}",
       r.ntp,
       r.pid,
       r.tx_seq,
       r.group_id,
-      r.timeout);
+      r.timeout,
+      r.coordinator_term);
     return o;
 }
 
@@ -103,12 +109,14 @@ std::ostream& operator<<(std::ostream& o, const commit_group_tx_reply& r) {
 std::ostream& operator<<(std::ostream& o, const abort_group_tx_request& r) {
     fmt::print(
       o,
-      "{{ntp {} pid {} tx_seq {} group_id {} timeout {}}}",
+      "{{ntp: {} pid: {} tx_seq: {} group_id: {} timeout: {} coordinator_term: "
+      "{}}}",
       r.ntp,
       r.pid,
       r.tx_seq,
       r.group_id,
-      r.timeout);
+      r.timeout,
+      r.coordinator_term);
     return o;
 }
 
@@ -170,11 +178,13 @@ operator<<(std::ostream& o, const add_partitions_tx_request::topic& t) {
 std::ostream& operator<<(std::ostream& o, const begin_tx_request& r) {
     fmt::print(
       o,
-      "{{ ntp: {}, pid: {}, tx_seq: {}, tm_partition: {}}}",
+      "{{ ntp: {}, pid: {}, tx_seq: {}, tm_partition: {}, coordinator_term: "
+      "{}}}",
       r.ntp,
       r.pid,
       r.tx_seq,
-      r.tm_partition);
+      r.tm_partition,
+      r.coordinator_term);
     return o;
 }
 

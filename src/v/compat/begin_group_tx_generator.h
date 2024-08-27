@@ -27,7 +27,8 @@ struct instance_generator<cluster::begin_group_tx_request> {
           model::random_producer_identity(),
           tests::random_named_int<model::tx_seq>(),
           tests::random_duration<model::timeout_clock::duration>(),
-          tests::random_named_int<model::partition_id>());
+          tests::random_named_int<model::partition_id>(),
+          tests::random_named_int<model::term_id>());
     }
     static std::vector<cluster::begin_group_tx_request> limits() {
         return {
@@ -37,14 +38,16 @@ struct instance_generator<cluster::begin_group_tx_request> {
             model::random_producer_identity(),
             model::tx_seq(std::numeric_limits<int64_t>::min()),
             min_duration(),
-            model::partition_id(std::numeric_limits<int32_t>::min())),
+            model::partition_id(std::numeric_limits<int32_t>::min()),
+            model::term_id{std::numeric_limits<int64_t>::min()}),
           cluster::begin_group_tx_request(
             model::random_ntp(),
             tests::random_named_string<kafka::group_id>(),
             model::random_producer_identity(),
             model::tx_seq(std::numeric_limits<int64_t>::max()),
             max_duration(),
-            model::partition_id(std::numeric_limits<int32_t>::max())),
+            model::partition_id(std::numeric_limits<int32_t>::max()),
+            model::term_id{std::numeric_limits<int64_t>::max()}),
         };
     }
 };

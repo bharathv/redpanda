@@ -25,7 +25,8 @@ struct instance_generator<cluster::commit_group_tx_request> {
           model::random_producer_identity(),
           tests::random_named_int<model::tx_seq>(),
           tests::random_named_string<kafka::group_id>(),
-          tests::random_duration<model::timeout_clock::duration>());
+          tests::random_duration<model::timeout_clock::duration>(),
+          tests::random_named_int<model::term_id>());
     }
     static std::vector<cluster::commit_group_tx_request> limits() { return {}; }
 };

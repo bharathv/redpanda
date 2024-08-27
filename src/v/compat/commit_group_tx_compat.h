@@ -25,6 +25,7 @@ GEN_COMPAT_CHECK_SERDE_ONLY(
       json_write(tx_seq);
       json_write(group_id);
       json_write(timeout);
+      json_write(coordinator_term);
   },
   {
       json_read(ntp);
@@ -32,6 +33,7 @@ GEN_COMPAT_CHECK_SERDE_ONLY(
       json_read(tx_seq);
       json_read(group_id);
       json_read(timeout);
+      json_read(coordinator_term);
   });
 
 GEN_COMPAT_CHECK_SERDE_ONLY(

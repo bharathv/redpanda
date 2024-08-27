@@ -1372,7 +1372,8 @@ ss::future<add_partitions_tx_reply> tx_gateway_frontend::do_add_partition_to_tx(
               tx.tx_seq,
               tx.timeout_ms,
               timeout,
-              stm->get_partition()));
+              stm->get_partition(),
+              term));
         }
         data_partition_begin_replies = co_await when_all_succeed(
           bfs.begin(), bfs.end());
@@ -1575,7 +1576,12 @@ ss::future<add_offsets_tx_reply> tx_gateway_frontend::do_add_offsets_to_tx(
     auto tx = std::move(r.value());
 
     auto group_info = co_await _rm_group_proxy->begin_group_tx(
-      request.group_id, pid, tx.tx_seq, tx.timeout_ms, stm->get_partition());
+      request.group_id,
+      pid,
+      tx.tx_seq,
+      tx.timeout_ms,
+      stm->get_partition(),
+      term);
     if (group_info.ec != tx::errc::none) {
         vlog(
           txlog.warn,
@@ -2131,13 +2137,13 @@ ss::future<tx_gateway_frontend::op_result_t> tx_gateway_frontend::commit_data(
         gfs.reserve(tx.groups.size());
         for (auto group : tx.groups) {
             gfs.push_back(_rm_group_proxy->commit_group_tx(
-              group.group_id, tx.pid, tx.tx_seq, timeout));
+              group.group_id, tx.pid, tx.tx_seq, timeout, expected_term));
         }
         std::vector<ss::future<commit_tx_reply>> cfs;
         cfs.reserve(tx.partitions.size());
         for (auto rm : tx.partitions) {
             cfs.push_back(_rm_partition_frontend.local().commit_tx(
-              rm.ntp, tx.pid, tx.tx_seq, timeout));
+              rm.ntp, tx.pid, tx.tx_seq, timeout, expected_term));
         }
         auto ok = true;
         auto failed = false;
@@ -2267,13 +2273,13 @@ ss::future<tx_gateway_frontend::op_result_t> tx_gateway_frontend::abort_data(
         pfs.reserve(tx.partitions.size());
         for (auto rm : tx.partitions) {
             pfs.push_back(_rm_partition_frontend.local().abort_tx(
-              rm.ntp, tx.pid, tx.tx_seq, timeout));
+              rm.ntp, tx.pid, tx.tx_seq, timeout, expected_term));
         }
         std::vector<ss::future<abort_group_tx_reply>> gfs;
         gfs.reserve(tx.groups.size());
         for (auto group : tx.groups) {
             gfs.push_back(_rm_group_proxy->abort_group_tx(
-              group.group_id, tx.pid, tx.tx_seq, timeout));
+              group.group_id, tx.pid, tx.tx_seq, timeout, expected_term));
         }
         auto prs = co_await when_all_succeed(pfs.begin(), pfs.end());
         auto grs = co_await when_all_succeed(gfs.begin(), gfs.end());

@@ -38,17 +38,20 @@ public:
       model::tx_seq,
       std::chrono::milliseconds,
       model::timeout_clock::duration,
-      model::partition_id);
+      model::partition_id,
+      model::term_id coordinator_term);
     ss::future<commit_tx_reply> commit_tx(
       model::ntp,
       model::producer_identity,
       model::tx_seq,
-      model::timeout_clock::duration);
+      model::timeout_clock::duration,
+      model::term_id coordinator_term);
     ss::future<abort_tx_reply> abort_tx(
       model::ntp,
       model::producer_identity,
       model::tx_seq,
-      model::timeout_clock::duration);
+      model::timeout_clock::duration,
+      model::term_id coordinator_term);
     ss::future<> stop() {
         _as.request_abort();
         return ss::make_ready_future<>();
@@ -75,51 +78,60 @@ private:
       model::tx_seq,
       std::chrono::milliseconds,
       model::timeout_clock::duration,
-      model::partition_id);
+      model::partition_id,
+      model::term_id coordinator_term);
     ss::future<begin_tx_reply> begin_tx_locally(
       model::ntp,
       model::producer_identity,
       model::tx_seq,
       std::chrono::milliseconds,
-      model::partition_id);
+      model::partition_id,
+      model::term_id coordinator_term);
     ss::future<begin_tx_reply> do_begin_tx(
       model::ntp,
       model::producer_identity,
       model::tx_seq,
       std::chrono::milliseconds,
-      model::partition_id);
+      model::partition_id,
+      model::term_id coordinator_term);
     ss::future<commit_tx_reply> dispatch_commit_tx(
       model::node_id,
       model::ntp,
       model::producer_identity,
       model::tx_seq,
-      model::timeout_clock::duration);
+      model::timeout_clock::duration,
+      model::term_id coordinator_term);
     ss::future<commit_tx_reply> commit_tx_locally(
       model::ntp,
       model::producer_identity,
       model::tx_seq,
-      model::timeout_clock::duration);
+      model::timeout_clock::duration,
+      model::term_id coordinator_term);
     ss::future<commit_tx_reply> do_commit_tx(
       model::ntp,
       model::producer_identity,
       model::tx_seq,
-      model::timeout_clock::duration);
+      model::timeout_clock::duration,
+      model::term_id coordinator_term);
     ss::future<abort_tx_reply> dispatch_abort_tx(
       model::node_id,
       model::ntp,
       model::producer_identity,
       model::tx_seq,
-      model::timeout_clock::duration);
+      model::timeout_clock::duration,
+      model::term_id coordinator_term);
     ss::future<abort_tx_reply> abort_tx_locally(
       model::ntp,
       model::producer_identity,
       model::tx_seq,
-      model::timeout_clock::duration);
+      model::timeout_clock::duration,
+      model::term_id coordinator_term);
     ss::future<abort_tx_reply> do_abort_tx(
       model::ntp,
       model::producer_identity,
       model::tx_seq,
-      model::timeout_clock::duration);
+      model::timeout_clock::duration,
+      model::term_id coordinator_term);
 
     friend tx_gateway;
 };

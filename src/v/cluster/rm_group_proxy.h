@@ -30,7 +30,8 @@ public:
       model::producer_identity,
       model::tx_seq,
       model::timeout_clock::duration,
-      model::partition_id)
+      model::partition_id,
+      model::term_id coordinator_term)
       = 0;
 
     virtual ss::future<begin_group_tx_reply>
@@ -40,7 +41,8 @@ public:
       kafka::group_id,
       model::producer_identity,
       model::tx_seq,
-      model::timeout_clock::duration)
+      model::timeout_clock::duration,
+      model::term_id coordinator_term)
       = 0;
 
     virtual ss::future<commit_group_tx_reply>
@@ -50,7 +52,8 @@ public:
       kafka::group_id,
       model::producer_identity,
       model::tx_seq,
-      model::timeout_clock::duration)
+      model::timeout_clock::duration,
+      model::term_id coordinator_term)
       = 0;
 
     virtual ss::future<abort_group_tx_reply>

@@ -25,7 +25,8 @@ struct instance_generator<cluster::abort_tx_request> {
           model::random_ntp(),
           model::random_producer_identity(),
           tests::random_named_int<model::tx_seq>(),
-          tests::random_duration<model::timeout_clock::duration>());
+          tests::random_duration<model::timeout_clock::duration>(),
+          tests::random_named_int<model::term_id>());
     }
     static std::vector<cluster::abort_tx_request> limits() {
         return {
@@ -33,12 +34,14 @@ struct instance_generator<cluster::abort_tx_request> {
             model::random_ntp(),
             model::random_producer_identity(),
             model::tx_seq(std::numeric_limits<int64_t>::min()),
-            min_duration()),
+            min_duration(),
+            model::term_id{std::numeric_limits<int64_t>::min()}),
           cluster::abort_tx_request(
             model::random_ntp(),
             model::random_producer_identity(),
             model::tx_seq(std::numeric_limits<int64_t>::max()),
-            max_duration()),
+            max_duration(),
+            model::term_id{std::numeric_limits<int64_t>::max()}),
         };
     }
 };

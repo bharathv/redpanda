@@ -322,13 +322,14 @@ struct fetch_tx_reply
 
 struct begin_tx_request
   : serde::
-      envelope<begin_tx_request, serde::version<1>, serde::compat_version<0>> {
+      envelope<begin_tx_request, serde::version<2>, serde::compat_version<0>> {
     using rpc_adl_exempt = std::true_type;
     model::ntp ntp;
     model::producer_identity pid;
     model::tx_seq tx_seq;
     std::chrono::milliseconds transaction_timeout_ms{};
     model::partition_id tm_partition{0};
+    model::term_id coordinator_term{};
 
     begin_tx_request() noexcept = default;
 
@@ -337,12 +338,14 @@ struct begin_tx_request
       model::producer_identity pid,
       model::tx_seq tx_seq,
       std::chrono::milliseconds transaction_timeout_ms,
-      model::partition_id tm_partition)
+      model::partition_id tm_partition,
+      model::term_id coordinator_term)
       : ntp(std::move(ntp))
       , pid(pid)
       , tx_seq(tx_seq)
       , transaction_timeout_ms(transaction_timeout_ms)
-      , tm_partition(tm_partition) {}
+      , tm_partition(tm_partition)
+      , coordinator_term(coordinator_term) {}
 
     friend bool operator==(const begin_tx_request&, const begin_tx_request&)
       = default;
@@ -350,7 +353,13 @@ struct begin_tx_request
     friend std::ostream& operator<<(std::ostream& o, const begin_tx_request& r);
 
     auto serde_fields() {
-        return std::tie(ntp, pid, tx_seq, transaction_timeout_ms, tm_partition);
+        return std::tie(
+          ntp,
+          pid,
+          tx_seq,
+          transaction_timeout_ms,
+          tm_partition,
+          coordinator_term);
     }
 };
 
@@ -455,13 +464,14 @@ struct prepare_tx_reply
 
 struct commit_tx_request
   : serde::
-      envelope<commit_tx_request, serde::version<0>, serde::compat_version<0>> {
+      envelope<commit_tx_request, serde::version<1>, serde::compat_version<0>> {
     using rpc_adl_exempt = std::true_type;
 
     model::ntp ntp;
     model::producer_identity pid;
     model::tx_seq tx_seq;
     model::timeout_clock::duration timeout{};
+    model::term_id coordinator_term;
 
     commit_tx_request() noexcept = default;
 
@@ -469,16 +479,20 @@ struct commit_tx_request
       model::ntp ntp,
       model::producer_identity pid,
       model::tx_seq tx_seq,
-      model::timeout_clock::duration timeout)
+      model::timeout_clock::duration timeout,
+      model::term_id coordinator_term)
       : ntp(std::move(ntp))
       , pid(pid)
       , tx_seq(tx_seq)
-      , timeout(timeout) {}
+      , timeout(timeout)
+      , coordinator_term(coordinator_term) {}
 
     friend bool operator==(const commit_tx_request&, const commit_tx_request&)
       = default;
 
-    auto serde_fields() { return std::tie(ntp, pid, tx_seq, timeout); }
+    auto serde_fields() {
+        return std::tie(ntp, pid, tx_seq, timeout, coordinator_term);
+    }
 
     friend std::ostream&
     operator<<(std::ostream& o, const commit_tx_request& r);
@@ -506,13 +520,14 @@ struct commit_tx_reply
 
 struct abort_tx_request
   : serde::
-      envelope<abort_tx_request, serde::version<0>, serde::compat_version<0>> {
+      envelope<abort_tx_request, serde::version<1>, serde::compat_version<0>> {
     using rpc_adl_exempt = std::true_type;
 
     model::ntp ntp;
     model::producer_identity pid;
     model::tx_seq tx_seq;
     model::timeout_clock::duration timeout{};
+    model::term_id coordinator_term;
 
     abort_tx_request() noexcept = default;
 
@@ -520,16 +535,20 @@ struct abort_tx_request
       model::ntp ntp,
       model::producer_identity pid,
       model::tx_seq tx_seq,
-      model::timeout_clock::duration timeout)
+      model::timeout_clock::duration timeout,
+      model::term_id coordinator_term)
       : ntp(std::move(ntp))
       , pid(pid)
       , tx_seq(tx_seq)
-      , timeout(timeout) {}
+      , timeout(timeout)
+      , coordinator_term(coordinator_term) {}
 
     friend bool operator==(const abort_tx_request&, const abort_tx_request&)
       = default;
 
-    auto serde_fields() { return std::tie(ntp, pid, tx_seq, timeout); }
+    auto serde_fields() {
+        return std::tie(ntp, pid, tx_seq, timeout, coordinator_term);
+    }
 
     friend std::ostream& operator<<(std::ostream& o, const abort_tx_request& r);
 };
@@ -557,7 +576,7 @@ struct abort_tx_reply
 struct begin_group_tx_request
   : serde::envelope<
       begin_group_tx_request,
-      serde::version<1>,
+      serde::version<2>,
       serde::compat_version<0>> {
     using rpc_adl_exempt = std::true_type;
 
@@ -567,6 +586,7 @@ struct begin_group_tx_request
     model::tx_seq tx_seq;
     model::timeout_clock::duration timeout{};
     model::partition_id tm_partition{0};
+    model::term_id coordinator_term{};
 
     begin_group_tx_request() noexcept = default;
 
@@ -576,13 +596,15 @@ struct begin_group_tx_request
       model::producer_identity pid,
       model::tx_seq tx_seq,
       model::timeout_clock::duration timeout,
-      model::partition_id tm)
+      model::partition_id tm,
+      model::term_id coordinator_term)
       : ntp(std::move(ntp))
       , group_id(std::move(group_id))
       , pid(pid)
       , tx_seq(tx_seq)
       , timeout(timeout)
-      , tm_partition(tm) {}
+      , tm_partition(tm)
+      , coordinator_term(coordinator_term) {}
 
     /*
      * construct with default value model::ntp
@@ -593,16 +615,24 @@ struct begin_group_tx_request
       model::producer_identity pid,
       model::tx_seq tx_seq,
       model::timeout_clock::duration timeout,
-      model::partition_id tm)
+      model::partition_id tm,
+      model::term_id coordinator_term)
       : begin_group_tx_request(
-        model::ntp(), std::move(group_id), pid, tx_seq, timeout, tm) {}
+        model::ntp(),
+        std::move(group_id),
+        pid,
+        tx_seq,
+        timeout,
+        tm,
+        coordinator_term) {}
 
     friend bool
     operator==(const begin_group_tx_request&, const begin_group_tx_request&)
       = default;
 
     auto serde_fields() {
-        return std::tie(ntp, group_id, pid, tx_seq, timeout, tm_partition);
+        return std::tie(
+          ntp, group_id, pid, tx_seq, timeout, tm_partition, coordinator_term);
     }
 
     friend std::ostream&
@@ -720,7 +750,7 @@ struct prepare_group_tx_reply
 struct commit_group_tx_request
   : serde::envelope<
       commit_group_tx_request,
-      serde::version<0>,
+      serde::version<1>,
       serde::compat_version<0>> {
     using rpc_adl_exempt = std::true_type;
 
@@ -729,6 +759,7 @@ struct commit_group_tx_request
     model::tx_seq tx_seq;
     kafka::group_id group_id;
     model::timeout_clock::duration timeout{};
+    model::term_id coordinator_term{};
 
     commit_group_tx_request() noexcept = default;
 
@@ -737,12 +768,14 @@ struct commit_group_tx_request
       model::producer_identity pid,
       model::tx_seq tx_seq,
       kafka::group_id group_id,
-      model::timeout_clock::duration timeout)
+      model::timeout_clock::duration timeout,
+      model::term_id coordinator_term)
       : ntp(std::move(ntp))
       , pid(pid)
       , tx_seq(tx_seq)
       , group_id(std::move(group_id))
-      , timeout(timeout) {}
+      , timeout(timeout)
+      , coordinator_term(coordinator_term) {}
 
     /*
      * construct with default value model::ntp
@@ -752,9 +785,15 @@ struct commit_group_tx_request
       model::producer_identity pid,
       model::tx_seq tx_seq,
       kafka::group_id group_id,
-      model::timeout_clock::duration timeout)
+      model::timeout_clock::duration timeout,
+      model::term_id coordinator_term)
       : commit_group_tx_request(
-        model::ntp(), pid, tx_seq, std::move(group_id), timeout) {}
+        model::ntp(),
+        pid,
+        tx_seq,
+        std::move(group_id),
+        timeout,
+        coordinator_term) {}
 
     friend bool
     operator==(const commit_group_tx_request&, const commit_group_tx_request&)
@@ -764,7 +803,7 @@ struct commit_group_tx_request
     operator<<(std::ostream& o, const commit_group_tx_request& r);
 
     auto serde_fields() {
-        return std::tie(ntp, pid, tx_seq, group_id, timeout);
+        return std::tie(ntp, pid, tx_seq, group_id, timeout, coordinator_term);
     }
 };
 
@@ -794,7 +833,7 @@ struct commit_group_tx_reply
 struct abort_group_tx_request
   : serde::envelope<
       abort_group_tx_request,
-      serde::version<0>,
+      serde::version<1>,
       serde::compat_version<0>> {
     using rpc_adl_exempt = std::true_type;
     model::ntp ntp;
@@ -802,6 +841,7 @@ struct abort_group_tx_request
     model::producer_identity pid;
     model::tx_seq tx_seq;
     model::timeout_clock::duration timeout{};
+    model::term_id coordinator_term{};
 
     abort_group_tx_request() noexcept = default;
 
@@ -810,12 +850,14 @@ struct abort_group_tx_request
       kafka::group_id group_id,
       model::producer_identity pid,
       model::tx_seq tx_seq,
-      model::timeout_clock::duration timeout)
+      model::timeout_clock::duration timeout,
+      model::term_id coordinator_term)
       : ntp(std::move(ntp))
       , group_id(std::move(group_id))
       , pid(pid)
       , tx_seq(tx_seq)
-      , timeout(timeout) {}
+      , timeout(timeout)
+      , coordinator_term(coordinator_term) {}
 
     /*
      * construct with default value model::ntp
@@ -825,9 +867,15 @@ struct abort_group_tx_request
       kafka::group_id group_id,
       model::producer_identity pid,
       model::tx_seq tx_seq,
-      model::timeout_clock::duration timeout)
+      model::timeout_clock::duration timeout,
+      model::term_id coordinator_term)
       : abort_group_tx_request(
-        model::ntp(), std::move(group_id), pid, tx_seq, timeout) {}
+        model::ntp(),
+        std::move(group_id),
+        pid,
+        tx_seq,
+        timeout,
+        coordinator_term) {}
 
     friend bool
     operator==(const abort_group_tx_request&, const abort_group_tx_request&)
@@ -837,7 +885,7 @@ struct abort_group_tx_request
     operator<<(std::ostream& o, const abort_group_tx_request& r);
 
     auto serde_fields() {
-        return std::tie(ntp, group_id, pid, tx_seq, timeout);
+        return std::tie(ntp, group_id, pid, tx_seq, timeout, coordinator_term);
     }
 };
 

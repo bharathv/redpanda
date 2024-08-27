@@ -25,7 +25,8 @@ struct instance_generator<cluster::begin_tx_request> {
           model::random_producer_identity(),
           tests::random_named_int<model::tx_seq>(),
           tests::random_duration_ms(),
-          tests::random_named_int<model::partition_id>());
+          tests::random_named_int<model::partition_id>(),
+          tests::random_named_int<model::term_id>());
     }
     static std::vector<cluster::begin_tx_request> limits() { return {}; }
 };

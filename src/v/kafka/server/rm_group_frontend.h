@@ -41,21 +41,24 @@ public:
       model::producer_identity,
       model::tx_seq,
       model::timeout_clock::duration,
-      model::partition_id tm);
+      model::partition_id tm,
+      model::term_id coordinator_term);
     ss::future<cluster::begin_group_tx_reply>
       begin_group_tx_locally(cluster::begin_group_tx_request);
     ss::future<cluster::commit_group_tx_reply> commit_group_tx(
       kafka::group_id,
       model::producer_identity,
       model::tx_seq,
-      model::timeout_clock::duration);
+      model::timeout_clock::duration,
+      model::term_id coordinator_term);
     ss::future<cluster::commit_group_tx_reply>
       commit_group_tx_locally(cluster::commit_group_tx_request);
     ss::future<cluster::abort_group_tx_reply> abort_group_tx(
       kafka::group_id,
       model::producer_identity,
       model::tx_seq,
-      model::timeout_clock::duration);
+      model::timeout_clock::duration,
+      model::term_id coordinator_term);
     ss::future<cluster::abort_group_tx_reply>
       abort_group_tx_locally(cluster::abort_group_tx_request);
 
@@ -74,19 +77,22 @@ private:
       model::producer_identity,
       model::tx_seq,
       model::timeout_clock::duration,
-      model::partition_id);
+      model::partition_id,
+      model::term_id coordinator_term);
     ss::future<cluster::commit_group_tx_reply> dispatch_commit_group_tx(
       model::node_id,
       kafka::group_id,
       model::producer_identity,
       model::tx_seq,
-      model::timeout_clock::duration);
+      model::timeout_clock::duration,
+      model::term_id coordinator_term);
     ss::future<cluster::abort_group_tx_reply> dispatch_abort_group_tx(
       model::node_id,
       kafka::group_id,
       model::producer_identity,
       model::tx_seq,
-      model::timeout_clock::duration);
+      model::timeout_clock::duration,
+      model::term_id coordinator_term);
 
     friend cluster::tx_gateway;
 };
@@ -101,9 +107,10 @@ public:
       model::producer_identity pid,
       model::tx_seq tx_seq,
       model::timeout_clock::duration timeout,
-      model::partition_id tm) override {
+      model::partition_id tm,
+      model::term_id coordinator_term) override {
         return _target.local().begin_group_tx(
-          group_id, pid, tx_seq, timeout, tm);
+          group_id, pid, tx_seq, timeout, tm, coordinator_term);
     }
 
     ss::future<cluster::begin_group_tx_reply>
@@ -115,8 +122,10 @@ public:
       kafka::group_id group_id,
       model::producer_identity pid,
       model::tx_seq tx_seq,
-      model::timeout_clock::duration timeout) override {
-        return _target.local().commit_group_tx(group_id, pid, tx_seq, timeout);
+      model::timeout_clock::duration timeout,
+      model::term_id coordinator_term) override {
+        return _target.local().commit_group_tx(
+          group_id, pid, tx_seq, timeout, coordinator_term);
     }
 
     ss::future<cluster::commit_group_tx_reply>
@@ -128,8 +137,10 @@ public:
       kafka::group_id group_id,
       model::producer_identity pid,
       model::tx_seq tx_seq,
-      model::timeout_clock::duration timeout) override {
-        return _target.local().abort_group_tx(group_id, pid, tx_seq, timeout);
+      model::timeout_clock::duration timeout,
+      model::term_id coordinator_term) override {
+        return _target.local().abort_group_tx(
+          group_id, pid, tx_seq, timeout, coordinator_term);
     }
 
     ss::future<cluster::abort_group_tx_reply>

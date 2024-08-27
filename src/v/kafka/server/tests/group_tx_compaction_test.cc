@@ -225,7 +225,13 @@ random_ops generate_workload(workload_parameters params) {
             auto seq = model::tx_seq{j};
             // group begin
             cluster::begin_group_tx_request begin_req{
-              offsets_ntp, id, pid, seq, no_timeout, model::partition_id{0}};
+              offsets_ntp,
+              id,
+              pid,
+              seq,
+              no_timeout,
+              model::partition_id{0},
+              {}};
             group_ops.emplace(ss::make_shared<begin_tx_op>(begin_req));
             // offset commit
             kafka::txn_offset_commit_request offset_req;
@@ -248,11 +254,11 @@ random_ops generate_workload(workload_parameters params) {
             // group end
             if (commit_group_tx) {
                 cluster::commit_group_tx_request commit_req{
-                  offsets_ntp, pid, seq, id, no_timeout};
+                  offsets_ntp, pid, seq, id, no_timeout, {}};
                 group_ops.emplace(ss::make_shared<commit_tx_op>(commit_req));
             } else {
                 cluster::abort_group_tx_request abort_req{
-                  offsets_ntp, id, pid, seq, no_timeout};
+                  offsets_ntp, id, pid, seq, no_timeout, {}};
                 group_ops.emplace(ss::make_shared<abort_tx_op>(abort_req));
             }
         }

@@ -984,7 +984,8 @@ SEASTAR_THREAD_TEST_CASE(serde_reflection_roundtrip) {
           tests::random_named_int<model::tx_seq>(),
           std::chrono::duration_cast<std::chrono::milliseconds>(
             random_timeout_clock_duration()),
-          tests::random_named_int<model::partition_id>()};
+          tests::random_named_int<model::partition_id>(),
+          tests::random_named_int<model::term_id>()};
 
         roundtrip_test(data);
     }
@@ -1016,7 +1017,8 @@ SEASTAR_THREAD_TEST_CASE(serde_reflection_roundtrip) {
           model::random_ntp(),
           random_producer_identity(),
           tests::random_named_int<model::tx_seq>(),
-          random_timeout_clock_duration()};
+          random_timeout_clock_duration(),
+          tests::random_named_int<model::term_id>()};
 
         roundtrip_test(data);
     }
@@ -1029,7 +1031,8 @@ SEASTAR_THREAD_TEST_CASE(serde_reflection_roundtrip) {
           model::random_ntp(),
           random_producer_identity(),
           tests::random_named_int<model::tx_seq>(),
-          random_timeout_clock_duration()};
+          random_timeout_clock_duration(),
+          tests::random_named_int<model::term_id>()};
 
         roundtrip_test(data);
     }
@@ -1044,7 +1047,8 @@ SEASTAR_THREAD_TEST_CASE(serde_reflection_roundtrip) {
           random_producer_identity(),
           tests::random_named_int<model::tx_seq>(),
           random_timeout_clock_duration(),
-          tests::random_named_int<model::partition_id>()};
+          tests::random_named_int<model::partition_id>(),
+          tests::random_named_int<model::term_id>()};
 
         roundtrip_test(data);
     }
@@ -1055,7 +1059,8 @@ SEASTAR_THREAD_TEST_CASE(serde_reflection_roundtrip) {
           random_producer_identity(),
           tests::random_named_int<model::tx_seq>(),
           random_timeout_clock_duration(),
-          tests::random_named_int<model::partition_id>()};
+          tests::random_named_int<model::partition_id>(),
+          tests::random_named_int<model::term_id>()};
 
         roundtrip_test(data);
     }
@@ -1101,7 +1106,8 @@ SEASTAR_THREAD_TEST_CASE(serde_reflection_roundtrip) {
           random_producer_identity(),
           tests::random_named_int<model::tx_seq>(),
           tests::random_named_string<kafka::group_id>(),
-          random_timeout_clock_duration()};
+          random_timeout_clock_duration(),
+          tests::random_named_int<model::term_id>()};
 
         roundtrip_test(data);
     }
@@ -1111,7 +1117,8 @@ SEASTAR_THREAD_TEST_CASE(serde_reflection_roundtrip) {
           random_producer_identity(),
           tests::random_named_int<model::tx_seq>(),
           tests::random_named_string<kafka::group_id>(),
-          random_timeout_clock_duration()};
+          random_timeout_clock_duration(),
+          tests::random_named_int<model::term_id>()};
 
         roundtrip_test(data);
     }
@@ -1125,7 +1132,8 @@ SEASTAR_THREAD_TEST_CASE(serde_reflection_roundtrip) {
           tests::random_named_string<kafka::group_id>(),
           random_producer_identity(),
           tests::random_named_int<model::tx_seq>(),
-          random_timeout_clock_duration()};
+          random_timeout_clock_duration(),
+          tests::random_named_int<model::term_id>()};
 
         roundtrip_test(data);
     }
@@ -1135,7 +1143,8 @@ SEASTAR_THREAD_TEST_CASE(serde_reflection_roundtrip) {
           tests::random_named_string<kafka::group_id>(),
           random_producer_identity(),
           tests::random_named_int<model::tx_seq>(),
-          random_timeout_clock_duration()};
+          random_timeout_clock_duration(),
+          tests::random_named_int<model::term_id>()};
 
         roundtrip_test(data);
     }

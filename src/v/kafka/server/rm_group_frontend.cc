@@ -115,7 +115,8 @@ ss::future<cluster::begin_group_tx_reply> rm_group_frontend::begin_group_tx(
   model::producer_identity pid,
   model::tx_seq tx_seq,
   model::timeout_clock::duration timeout,
-  model::partition_id tm) {
+  model::partition_id tm,
+  model::term_id coordinator_term) {
     auto ntp_opt = _group_router.local().coordinator_mapper().local().ntp_for(
       group_id);
     if (!ntp_opt) {
@@ -182,7 +183,8 @@ ss::future<cluster::begin_group_tx_reply> rm_group_frontend::begin_group_tx(
     auto _self = _controller->self();
 
     if (leader == _self) {
-        cluster::begin_group_tx_request req{group_id, pid, tx_seq, timeout, tm};
+        cluster::begin_group_tx_request req{
+          group_id, pid, tx_seq, timeout, tm, coordinator_term};
         co_return co_await begin_group_tx_locally(std::move(req));
     }
 
@@ -197,7 +199,7 @@ ss::future<cluster::begin_group_tx_reply> rm_group_frontend::begin_group_tx(
       _self,
       leader);
     auto reply = co_await dispatch_begin_group_tx(
-      leader, group_id, pid, tx_seq, timeout, tm);
+      leader, group_id, pid, tx_seq, timeout, tm, coordinator_term);
     vlog(
       cluster::txlog.trace,
       "received name:begin_group_tx, group_id:{}, pid:{}, tx_seq:{}, ec:{}, "
@@ -217,18 +219,19 @@ rm_group_frontend::dispatch_begin_group_tx(
   model::producer_identity pid,
   model::tx_seq tx_seq,
   model::timeout_clock::duration timeout,
-  model::partition_id tm) {
+  model::partition_id tm,
+  model::term_id coordinator_term) {
     return _connection_cache.local()
       .with_node_client<cluster::tx_gateway_client_protocol>(
         _controller->self(),
         ss::this_shard_id(),
         leader,
         timeout,
-        [group_id, pid, tx_seq, timeout, tm](
+        [group_id, pid, tx_seq, timeout, tm, coordinator_term](
           cluster::tx_gateway_client_protocol cp) {
             return cp.begin_group_tx(
               cluster::begin_group_tx_request{
-                group_id, pid, tx_seq, timeout, tm},
+                group_id, pid, tx_seq, timeout, tm, coordinator_term},
               rpc::client_opts(model::timeout_clock::now() + timeout));
         })
       .then(&rpc::get_ctx_data<cluster::begin_group_tx_reply>)
@@ -272,7 +275,8 @@ ss::future<cluster::commit_group_tx_reply> rm_group_frontend::commit_group_tx(
   kafka::group_id group_id,
   model::producer_identity pid,
   model::tx_seq tx_seq,
-  model::timeout_clock::duration timeout) {
+  model::timeout_clock::duration timeout,
+  model::term_id coordinator_term) {
     auto ntp_opt = _group_router.local().coordinator_mapper().local().ntp_for(
       group_id);
     if (!ntp_opt) {
@@ -300,7 +304,8 @@ ss::future<cluster::commit_group_tx_reply> rm_group_frontend::commit_group_tx(
     auto _self = _controller->self();
 
     if (leader == _self) {
-        cluster::commit_group_tx_request req{pid, tx_seq, group_id, timeout};
+        cluster::commit_group_tx_request req{
+          pid, tx_seq, group_id, timeout, coordinator_term};
         co_return co_await commit_group_tx_locally(std::move(req));
     }
 
@@ -315,7 +320,7 @@ ss::future<cluster::commit_group_tx_reply> rm_group_frontend::commit_group_tx(
       leader);
 
     auto reply = co_await dispatch_commit_group_tx(
-      leader, group_id, pid, tx_seq, timeout);
+      leader, group_id, pid, tx_seq, timeout, coordinator_term);
 
     vlog(
       cluster::txlog.trace,
@@ -334,17 +339,19 @@ rm_group_frontend::dispatch_commit_group_tx(
   kafka::group_id group_id,
   model::producer_identity pid,
   model::tx_seq tx_seq,
-  model::timeout_clock::duration timeout) {
+  model::timeout_clock::duration timeout,
+  model::term_id coordinator_term) {
     return _connection_cache.local()
       .with_node_client<cluster::tx_gateway_client_protocol>(
         _controller->self(),
         ss::this_shard_id(),
         leader,
         timeout,
-        [group_id, pid, tx_seq, timeout](
+        [group_id, pid, tx_seq, timeout, coordinator_term](
           cluster::tx_gateway_client_protocol cp) {
             return cp.commit_group_tx(
-              cluster::commit_group_tx_request{pid, tx_seq, group_id, timeout},
+              cluster::commit_group_tx_request{
+                pid, tx_seq, group_id, timeout, coordinator_term},
               rpc::client_opts(model::timeout_clock::now() + timeout));
         })
       .then(&rpc::get_ctx_data<cluster::commit_group_tx_reply>)
@@ -385,7 +392,8 @@ ss::future<cluster::abort_group_tx_reply> rm_group_frontend::abort_group_tx(
   kafka::group_id group_id,
   model::producer_identity pid,
   model::tx_seq tx_seq,
-  model::timeout_clock::duration timeout) {
+  model::timeout_clock::duration timeout,
+  model::term_id coordinator_term) {
     auto ntp_opt = _group_router.local().coordinator_mapper().local().ntp_for(
       group_id);
     if (!ntp_opt) {
@@ -417,6 +425,7 @@ ss::future<cluster::abort_group_tx_reply> rm_group_frontend::abort_group_tx(
           pid,
           tx_seq,
           timeout,
+          coordinator_term,
         };
         co_return co_await abort_group_tx_locally(std::move(req));
     }
@@ -432,7 +441,7 @@ ss::future<cluster::abort_group_tx_reply> rm_group_frontend::abort_group_tx(
       leader);
 
     auto reply = co_await dispatch_abort_group_tx(
-      leader, group_id, pid, tx_seq, timeout);
+      leader, group_id, pid, tx_seq, timeout, coordinator_term);
 
     vlog(
       cluster::txlog.trace,
@@ -451,17 +460,19 @@ rm_group_frontend::dispatch_abort_group_tx(
   kafka::group_id group_id,
   model::producer_identity pid,
   model::tx_seq tx_seq,
-  model::timeout_clock::duration timeout) {
+  model::timeout_clock::duration timeout,
+  model::term_id coordinator_term) {
     return _connection_cache.local()
       .with_node_client<cluster::tx_gateway_client_protocol>(
         _controller->self(),
         ss::this_shard_id(),
         leader,
         timeout,
-        [group_id, pid, tx_seq, timeout](
+        [group_id, pid, tx_seq, timeout, coordinator_term](
           cluster::tx_gateway_client_protocol cp) {
             return cp.abort_group_tx(
-              cluster::abort_group_tx_request{group_id, pid, tx_seq, timeout},
+              cluster::abort_group_tx_request{
+                group_id, pid, tx_seq, timeout, coordinator_term},
               rpc::client_opts(model::timeout_clock::now() + timeout));
         })
       .then(&rpc::get_ctx_data<cluster::abort_group_tx_reply>)

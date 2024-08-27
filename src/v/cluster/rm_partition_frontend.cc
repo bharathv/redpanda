@@ -62,7 +62,8 @@ ss::future<begin_tx_reply> rm_partition_frontend::begin_tx(
   model::tx_seq tx_seq,
   std::chrono::milliseconds transaction_timeout_ms,
   model::timeout_clock::duration timeout,
-  model::partition_id tm) {
+  model::partition_id tm,
+  model::term_id coordinator_term) {
     auto nt = model::topic_namespace_view(ntp.ns, ntp.tp.topic);
 
     if (!_metadata_cache.local().contains(nt, ntp.tp.partition)) {
@@ -96,7 +97,7 @@ ss::future<begin_tx_reply> rm_partition_frontend::begin_tx(
           transaction_timeout_ms,
           tm);
         result = co_await begin_tx_locally(
-          ntp, pid, tx_seq, transaction_timeout_ms, tm);
+          ntp, pid, tx_seq, transaction_timeout_ms, tm, coordinator_term);
         vlog(
           txlog.trace,
           "received name:begin_tx, ntp:{}, pid:{}, tx_seq:{}, coordinator: {}, "
@@ -122,7 +123,14 @@ ss::future<begin_tx_reply> rm_partition_frontend::begin_tx(
           _self,
           leader);
         result = co_await dispatch_begin_tx(
-          leader, ntp, pid, tx_seq, transaction_timeout_ms, timeout, tm);
+          leader,
+          ntp,
+          pid,
+          tx_seq,
+          transaction_timeout_ms,
+          timeout,
+          tm,
+          coordinator_term);
         vlog(
           txlog.trace,
           "received name:begin_tx, ntp:{}, pid:{}, tx_seq:{}, coordinator:{}, "
@@ -145,17 +153,24 @@ ss::future<begin_tx_reply> rm_partition_frontend::dispatch_begin_tx(
   model::tx_seq tx_seq,
   std::chrono::milliseconds transaction_timeout_ms,
   model::timeout_clock::duration timeout,
-  model::partition_id tm) {
+  model::partition_id tm,
+  model::term_id coordinator_term) {
     return _connection_cache.local()
       .with_node_client<cluster::tx_gateway_client_protocol>(
         _controller->self(),
         ss::this_shard_id(),
         leader,
         timeout,
-        [ntp, pid, tx_seq, transaction_timeout_ms, timeout, tm](
-          tx_gateway_client_protocol cp) {
+        [ntp,
+         pid,
+         tx_seq,
+         transaction_timeout_ms,
+         timeout,
+         tm,
+         coordinator_term](tx_gateway_client_protocol cp) {
             return cp.begin_tx(
-              begin_tx_request{ntp, pid, tx_seq, transaction_timeout_ms, tm},
+              begin_tx_request{
+                ntp, pid, tx_seq, transaction_timeout_ms, tm, coordinator_term},
               rpc::client_opts(model::timeout_clock::now() + timeout));
         })
       .then(&rpc::get_ctx_data<begin_tx_reply>)
@@ -174,7 +189,8 @@ ss::future<begin_tx_reply> rm_partition_frontend::begin_tx_locally(
   model::producer_identity pid,
   model::tx_seq tx_seq,
   std::chrono::milliseconds transaction_timeout_ms,
-  model::partition_id tm) {
+  model::partition_id tm,
+  model::term_id coordinator_term) {
     vlog(
       txlog.trace,
       "processing name:begin_tx, ntp:{}, pid:{}, tx_seq:{}, coordinator: {}",
@@ -183,7 +199,7 @@ ss::future<begin_tx_reply> rm_partition_frontend::begin_tx_locally(
       tx_seq,
       tm);
     auto reply = co_await do_begin_tx(
-      ntp, pid, tx_seq, transaction_timeout_ms, tm);
+      ntp, pid, tx_seq, transaction_timeout_ms, tm, coordinator_term);
     vlog(
       txlog.trace,
       "sending name:begin_tx, ntp:{}, pid:{}, tx_seq:{}, coordinator: {}, "
@@ -202,7 +218,8 @@ ss::future<begin_tx_reply> rm_partition_frontend::do_begin_tx(
   model::producer_identity pid,
   model::tx_seq tx_seq,
   std::chrono::milliseconds transaction_timeout_ms,
-  model::partition_id tm) {
+  model::partition_id tm,
+  model::term_id) {
     if (!is_leader_of(ntp)) {
         return ss::make_ready_future<begin_tx_reply>(
           begin_tx_reply{ntp, tx::errc::leader_not_found});
@@ -258,7 +275,8 @@ ss::future<commit_tx_reply> rm_partition_frontend::commit_tx(
   model::ntp ntp,
   model::producer_identity pid,
   model::tx_seq tx_seq,
-  model::timeout_clock::duration timeout) {
+  model::timeout_clock::duration timeout,
+  model::term_id coordinator_term) {
     auto nt = model::topic_namespace(ntp.ns, ntp.tp.topic);
 
     if (!_metadata_cache.local().contains(nt, ntp.tp.partition)) {
@@ -281,7 +299,7 @@ ss::future<commit_tx_reply> rm_partition_frontend::commit_tx(
     auto _self = _controller->self();
 
     if (leader == _self) {
-        return commit_tx_locally(ntp, pid, tx_seq, timeout);
+        return commit_tx_locally(ntp, pid, tx_seq, timeout, coordinator_term);
     }
 
     vlog(
@@ -293,7 +311,8 @@ ss::future<commit_tx_reply> rm_partition_frontend::commit_tx(
       _self,
       leader);
 
-    return dispatch_commit_tx(leader.value(), ntp, pid, tx_seq, timeout)
+    return dispatch_commit_tx(
+             leader.value(), ntp, pid, tx_seq, timeout, coordinator_term)
       .then([ntp, pid, tx_seq](commit_tx_reply reply) {
           vlog(
             txlog.trace,
@@ -311,16 +330,18 @@ ss::future<commit_tx_reply> rm_partition_frontend::dispatch_commit_tx(
   model::ntp ntp,
   model::producer_identity pid,
   model::tx_seq tx_seq,
-  model::timeout_clock::duration timeout) {
+  model::timeout_clock::duration timeout,
+  model::term_id coordinator_term) {
     return _connection_cache.local()
       .with_node_client<cluster::tx_gateway_client_protocol>(
         _controller->self(),
         ss::this_shard_id(),
         leader,
         timeout,
-        [ntp, pid, tx_seq, timeout](tx_gateway_client_protocol cp) {
+        [ntp, pid, tx_seq, timeout, coordinator_term](
+          tx_gateway_client_protocol cp) {
             return cp.commit_tx(
-              commit_tx_request{ntp, pid, tx_seq, timeout},
+              commit_tx_request{ntp, pid, tx_seq, timeout, coordinator_term},
               rpc::client_opts(model::timeout_clock::now() + timeout));
         })
       .then(&rpc::get_ctx_data<commit_tx_reply>)
@@ -338,14 +359,16 @@ ss::future<commit_tx_reply> rm_partition_frontend::commit_tx_locally(
   model::ntp ntp,
   model::producer_identity pid,
   model::tx_seq tx_seq,
-  model::timeout_clock::duration timeout) {
+  model::timeout_clock::duration timeout,
+  model::term_id coordinator_term) {
     vlog(
       txlog.trace,
       "processing name:commit_tx, ntp:{}, pid:{}, tx_seq:{}",
       ntp,
       pid,
       tx_seq);
-    auto reply = co_await do_commit_tx(ntp, pid, tx_seq, timeout);
+    auto reply = co_await do_commit_tx(
+      ntp, pid, tx_seq, timeout, coordinator_term);
     vlog(
       txlog.trace,
       "sending name:commit_tx, ntp:{}, pid:{}, tx_seq:{}, ec:{}",
@@ -360,7 +383,8 @@ ss::future<commit_tx_reply> rm_partition_frontend::do_commit_tx(
   model::ntp ntp,
   model::producer_identity pid,
   model::tx_seq tx_seq,
-  model::timeout_clock::duration timeout) {
+  model::timeout_clock::duration timeout,
+  model::term_id) {
     if (!is_leader_of(ntp)) {
         return ss::make_ready_future<commit_tx_reply>(
           commit_tx_reply{tx::errc::leader_not_found});
@@ -401,7 +425,8 @@ ss::future<abort_tx_reply> rm_partition_frontend::abort_tx(
   model::ntp ntp,
   model::producer_identity pid,
   model::tx_seq tx_seq,
-  model::timeout_clock::duration timeout) {
+  model::timeout_clock::duration timeout,
+  model::term_id coordinator_term) {
     auto nt = model::topic_namespace(ntp.ns, ntp.tp.topic);
 
     if (!_metadata_cache.local().contains(nt, ntp.tp.partition)) {
@@ -424,7 +449,7 @@ ss::future<abort_tx_reply> rm_partition_frontend::abort_tx(
     auto _self = _controller->self();
 
     if (leader == _self) {
-        return abort_tx_locally(ntp, pid, tx_seq, timeout);
+        return abort_tx_locally(ntp, pid, tx_seq, timeout, coordinator_term);
     }
 
     vlog(
@@ -436,7 +461,8 @@ ss::future<abort_tx_reply> rm_partition_frontend::abort_tx(
       _self,
       leader);
 
-    return dispatch_abort_tx(leader.value(), ntp, pid, tx_seq, timeout)
+    return dispatch_abort_tx(
+             leader.value(), ntp, pid, tx_seq, timeout, coordinator_term)
       .then([ntp, pid, tx_seq](abort_tx_reply reply) {
           vlog(
             txlog.trace,
@@ -454,16 +480,18 @@ ss::future<abort_tx_reply> rm_partition_frontend::dispatch_abort_tx(
   model::ntp ntp,
   model::producer_identity pid,
   model::tx_seq tx_seq,
-  model::timeout_clock::duration timeout) {
+  model::timeout_clock::duration timeout,
+  model::term_id coordinator_term) {
     return _connection_cache.local()
       .with_node_client<cluster::tx_gateway_client_protocol>(
         _controller->self(),
         ss::this_shard_id(),
         leader,
         timeout,
-        [ntp, pid, tx_seq, timeout](tx_gateway_client_protocol cp) {
+        [ntp, pid, tx_seq, timeout, coordinator_term](
+          tx_gateway_client_protocol cp) {
             return cp.abort_tx(
-              abort_tx_request{ntp, pid, tx_seq, timeout},
+              abort_tx_request{ntp, pid, tx_seq, timeout, coordinator_term},
               rpc::client_opts(model::timeout_clock::now() + timeout));
         })
       .then(&rpc::get_ctx_data<abort_tx_reply>)
@@ -481,14 +509,16 @@ ss::future<abort_tx_reply> rm_partition_frontend::abort_tx_locally(
   model::ntp ntp,
   model::producer_identity pid,
   model::tx_seq tx_seq,
-  model::timeout_clock::duration timeout) {
+  model::timeout_clock::duration timeout,
+  model::term_id coordinator_term) {
     vlog(
       txlog.trace,
       "processing name:abort_tx, ntp:{}, pid:{}, tx_seq:{}",
       ntp,
       pid,
       tx_seq);
-    auto reply = co_await do_abort_tx(ntp, pid, tx_seq, timeout);
+    auto reply = co_await do_abort_tx(
+      ntp, pid, tx_seq, timeout, coordinator_term);
     vlog(
       txlog.trace,
       "sending name:abort_tx, ntp:{}, pid:{}, tx_seq:{}, ec:{}",
@@ -503,7 +533,8 @@ ss::future<abort_tx_reply> rm_partition_frontend::do_abort_tx(
   model::ntp ntp,
   model::producer_identity pid,
   model::tx_seq tx_seq,
-  model::timeout_clock::duration timeout) {
+  model::timeout_clock::duration timeout,
+  model::term_id) {
     if (!is_leader_of(ntp)) {
         return ss::make_ready_future<abort_tx_reply>(
           abort_tx_reply{tx::errc::leader_not_found});
