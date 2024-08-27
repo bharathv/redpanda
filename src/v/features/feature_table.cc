@@ -112,6 +112,8 @@ std::string_view to_string_view(feature f) {
         return "transforms_specify_offset";
     case feature::remote_labels:
         return "remote_labels";
+    case feature::tx_coordinator_term_based_fencing:
+        return "tx_coordinator_term_based_fencing";
 
     /*
      * testing features
