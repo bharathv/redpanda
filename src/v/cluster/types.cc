@@ -348,7 +348,7 @@ std::ostream& operator<<(std::ostream& o, const incremental_topic_updates& i) {
       "record_value_subject_name_strategy_compat: {}, "
       "initial_retention_local_target_bytes: {}, "
       "initial_retention_local_target_ms: {}, write_caching: {}, flush_ms: {}, "
-      "flush_bytes: {}",
+      "flush_bytes: {}, datalake_enabled: {}",
       i.compression,
       i.cleanup_policy_bitflags,
       i.compaction_strategy,
@@ -374,7 +374,8 @@ std::ostream& operator<<(std::ostream& o, const incremental_topic_updates& i) {
       i.initial_retention_local_target_ms,
       i.write_caching,
       i.flush_ms,
-      i.flush_bytes);
+      i.flush_bytes,
+      i.datalake_enabled);
     return o;
 }
 
@@ -1309,6 +1310,13 @@ adl<cluster::incremental_topic_updates>::from(iobuf_parser& in) {
                              .from(in);
         updates.flush_bytes
           = adl<cluster::property_update<std::optional<size_t>>>{}.from(in);
+    }
+
+    if (
+      version
+      <= cluster::incremental_topic_updates::version_with_datalake_property) {
+        updates.datalake_enabled = adl<cluster::property_update<bool>>{}.from(
+          in);
     }
 
     return updates;

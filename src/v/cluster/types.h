@@ -573,6 +573,7 @@ struct incremental_topic_updates
     static constexpr int8_t version_with_schema_id_validation = -6;
     static constexpr int8_t version_with_initial_retention = -7;
     static constexpr int8_t version_with_write_caching = -8;
+    static constexpr int8_t version_with_datalake_property = -9;
     // negative version indicating different format:
     // -1 - topic_updates with data_policy
     // -2 - topic_updates without data_policy
@@ -622,6 +623,7 @@ struct incremental_topic_updates
     property_update<std::optional<model::write_caching_mode>> write_caching;
     property_update<std::optional<std::chrono::milliseconds>> flush_ms;
     property_update<std::optional<size_t>> flush_bytes;
+    property_update<bool> datalake_enabled;
 
     auto serde_fields() {
         return std::tie(
@@ -650,7 +652,8 @@ struct incremental_topic_updates
           initial_retention_local_target_ms,
           write_caching,
           flush_ms,
-          flush_bytes);
+          flush_bytes,
+          datalake_enabled);
     }
 
     friend std::ostream&

@@ -741,6 +741,23 @@ config_response_container_t make_topic_configs(
           });
     }
 
+    if (config_property_requested(
+          config_keys, topic_property_datalake_enabled)) {
+        add_topic_config<bool>(
+          result,
+          topic_property_datalake_enabled,
+          storage::ntp_config::default_datalake_enabled,
+          topic_property_datalake_enabled,
+          override_if_not_default(
+            std::make_optional<bool>(topic_properties.datalake_enabled),
+            storage::ntp_config::default_datalake_enabled),
+          true,
+          maybe_make_documentation(
+            include_documentation,
+            "Datalake format translation enabled on this topic if true."),
+          [](const bool& b) { return b ? "true" : "false"; });
+    }
+
     constexpr std::string_view key_validation
       = "Enable validation of the schema id for keys on a record";
     constexpr std::string_view val_validation
