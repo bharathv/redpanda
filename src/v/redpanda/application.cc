@@ -84,6 +84,7 @@
 #include "config/seed_server.h"
 #include "config/types.h"
 #include "crypto/ossl_context_service.h"
+#include "datalake/translation_tracking_stm.h"
 #include "features/feature_table_snapshot.h"
 #include "features/fwd.h"
 #include "finjector/stress_fiber.h"
@@ -2835,6 +2836,7 @@ void application::start_runtime_services(
             feature_table,
             controller->get_topics_state());
           pm.register_factory<kafka::group_tx_tracker_stm_factory>();
+          pm.register_factory<datalake::stm::stm_factory>();
       })
       .get();
     partition_manager.invoke_on_all(&cluster::partition_manager::start).get();

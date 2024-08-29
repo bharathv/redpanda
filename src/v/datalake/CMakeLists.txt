@@ -12,6 +12,7 @@ v_cc_library(
     proto_to_arrow_struct.cc
     record_multiplexer.cc
     schemaless_translator.cc
+    translation_tracking_stm.cc
   DEPS
     v::storage
     Seastar::seastar
