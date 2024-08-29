@@ -48,10 +48,11 @@ enum class record_batch_type : int8_t {
     cluster_recovery_cmd = 28,       // cluster recovery command
     compaction_placeholder
     = 29, // place holder for last batch in a segment that was aborted
-    role_management_cmd = 30, // role management command
-    client_quota = 31,        // client quota command
-    data_migration_cmd = 32,  // data migration manipulation command
-    group_fence_tx = 33,      // fence batch in group transactions
+    role_management_cmd = 30,           // role management command
+    client_quota = 31,                  // client quota command
+    data_migration_cmd = 32,            // data migration manipulation command
+    group_fence_tx = 33,                // fence batch in group transactions
+    datalake_translation_metadata = 34, // metadata about translation progress
     MAX = group_fence_tx,
 };
 
@@ -68,7 +69,8 @@ inline std::vector<model::record_batch_type> offset_translator_batch_types() {
       model::record_batch_type::raft_configuration,
       model::record_batch_type::archival_metadata,
       model::record_batch_type::version_fence,
-      model::record_batch_type::prefix_truncate};
+      model::record_batch_type::prefix_truncate,
+      model::record_batch_type::datalake_translation_metadata};
 }
 
 } // namespace model
