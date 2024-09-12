@@ -35,6 +35,8 @@ public:
     static constexpr bool legacy_remote_delete{false};
     static constexpr bool default_iceberg_enabled{false};
     static constexpr bool default_cloud_topic_enabled{false};
+    static constexpr std::chrono::milliseconds
+      default_iceberg_translation_interval_ms{60000};
 
     static constexpr std::chrono::milliseconds read_replica_retention{3600000};
 
@@ -80,6 +82,9 @@ public:
         std::optional<size_t> flush_bytes;
         bool iceberg_enabled{default_iceberg_enabled};
         bool cloud_topic_enabled{default_cloud_topic_enabled};
+        std::optional<std::chrono::milliseconds>
+          iceberg_translation_interval_ms{
+            default_iceberg_translation_interval_ms};
 
         friend std::ostream&
         operator<<(std::ostream&, const default_overrides&);
@@ -317,6 +322,12 @@ public:
         }
         return _overrides ? _overrides->cloud_topic_enabled
                           : default_cloud_topic_enabled;
+    }
+    std::chrono::milliseconds iceberg_translation_interval_ms() const {
+        return _overrides
+                 ? _overrides->iceberg_translation_interval_ms.value_or(
+                   default_iceberg_translation_interval_ms)
+                 : default_iceberg_translation_interval_ms;
     }
 
 private:
