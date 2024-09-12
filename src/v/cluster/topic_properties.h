@@ -163,6 +163,7 @@ struct topic_properties
     std::optional<std::chrono::milliseconds> flush_ms;
     std::optional<size_t> flush_bytes;
     bool datalake_enabled;
+    std::optional<std::chrono::milliseconds> datalake_translation_debounce_ms;
 
     // Label to be used when generating paths of remote objects (manifests,
     // segments, etc) of this topic.
@@ -219,7 +220,8 @@ struct topic_properties
           flush_bytes,
           remote_label,
           remote_topic_namespace_override,
-          datalake_enabled);
+          datalake_enabled,
+          datalake_translation_debounce_ms);
     }
 
     friend bool operator==(const topic_properties&, const topic_properties&)

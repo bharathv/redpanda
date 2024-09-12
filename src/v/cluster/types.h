@@ -624,6 +624,8 @@ struct incremental_topic_updates
     property_update<std::optional<std::chrono::milliseconds>> flush_ms;
     property_update<std::optional<size_t>> flush_bytes;
     property_update<bool> datalake_enabled;
+    property_update<std::optional<std::chrono::milliseconds>>
+      datalake_translation_debounce_ms;
 
     auto serde_fields() {
         return std::tie(
@@ -653,7 +655,8 @@ struct incremental_topic_updates
           write_caching,
           flush_ms,
           flush_bytes,
-          datalake_enabled);
+          datalake_enabled,
+          datalake_translation_debounce_ms);
     }
 
     friend std::ostream&

@@ -56,6 +56,8 @@ storage::ntp_config topic_configuration::make_ntp_config(
             .flush_ms = properties.flush_ms,
             .flush_bytes = properties.flush_bytes,
             .datalake_enabled = properties.datalake_enabled,
+            .datalake_translation_debounce_ms
+            = properties.datalake_translation_debounce_ms,
           });
     }
     return {

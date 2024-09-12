@@ -39,7 +39,8 @@ std::ostream& operator<<(std::ostream& o, const topic_properties& properties) {
       "write_caching: {}, "
       "flush_ms: {}, "
       "flush_bytes: {}, "
-      "remote_label: {}, datalake_enabled: {}}}",
+      "remote_label: {}, datalake_enabled: {}, "
+      "datalake_translation_debounce_ms: {}}}",
       properties.compression,
       properties.cleanup_policy_bitflags,
       properties.compaction_strategy,
@@ -73,7 +74,8 @@ std::ostream& operator<<(std::ostream& o, const topic_properties& properties) {
       properties.flush_ms,
       properties.flush_bytes,
       properties.remote_label,
-      properties.datalake_enabled);
+      properties.datalake_enabled,
+      properties.datalake_translation_debounce_ms);
 
     return o;
 }
@@ -110,7 +112,8 @@ bool topic_properties::has_overrides() const {
            || initial_retention_local_target_ms.is_engaged()
            || write_caching.has_value() || flush_ms.has_value()
            || flush_bytes.has_value() || remote_label.has_value()
-           || (datalake_enabled != storage::ntp_config::default_datalake_enabled);
+           || (datalake_enabled != storage::ntp_config::default_datalake_enabled)
+           || datalake_translation_debounce_ms.has_value();
 }
 
 bool topic_properties::requires_remote_erase() const {
@@ -144,6 +147,7 @@ topic_properties::get_ntp_cfg_overrides() const {
     ret.flush_ms = flush_ms;
     ret.flush_bytes = flush_bytes;
     ret.datalake_enabled = datalake_enabled;
+    ret.datalake_translation_debounce_ms = datalake_translation_debounce_ms;
     return ret;
 }
 

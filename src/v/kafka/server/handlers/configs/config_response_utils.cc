@@ -713,6 +713,17 @@ config_response_container_t make_topic_configs(
     add_topic_config_if_requested(
       config_keys,
       result,
+      "default_datalake_debounce_ms",
+      storage::ntp_config::default_datalake_translation_debounce_ms,
+      topic_property_datalake_translation_debounce_ms,
+      topic_properties.datalake_translation_debounce_ms,
+      include_synonyms,
+      maybe_make_documentation(include_documentation, "datalake deobounce ms"),
+      &describe_as_string<std::chrono::milliseconds>);
+
+    add_topic_config_if_requested(
+      config_keys,
+      result,
       topic_property_segment_ms,
       metadata_cache.get_default_segment_ms(),
       topic_property_segment_ms,

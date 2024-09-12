@@ -114,7 +114,8 @@ operator<<(std::ostream& o, const ntp_config::default_overrides& v) {
       "remote_delete: {}, segment_ms: {}, "
       "initial_retention_local_target_bytes: {}, "
       "initial_retention_local_target_ms: {}, write_caching: {}, flush_ms: {}, "
-      "flush_bytes: {} datalake_enabled: {}}}",
+      "flush_bytes: {} datalake_enabled: {} datalake_translation_debounce: "
+      "{}}}",
       v.compaction_strategy,
       v.cleanup_policy_bitflags,
       v.segment_size,
@@ -130,7 +131,8 @@ operator<<(std::ostream& o, const ntp_config::default_overrides& v) {
       v.write_caching,
       v.flush_ms,
       v.flush_bytes,
-      v.datalake_enabled);
+      v.datalake_enabled,
+      v.datalake_translation_debounce_ms);
 
     return o;
 }

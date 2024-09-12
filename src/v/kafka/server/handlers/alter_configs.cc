@@ -77,7 +77,7 @@ create_topic_properties_update(alter_configs_resource& resource) {
     std::apply(apply_op(op_t::none), update.custom_properties.serde_fields());
 
     static_assert(
-      std::tuple_size_v<decltype(update.properties.serde_fields())> == 27,
+      std::tuple_size_v<decltype(update.properties.serde_fields())> == 28,
       "If you added a property, please decide on it's default alter config "
       "policy, and handle the update in the loop below");
     static_assert(
@@ -282,6 +282,13 @@ create_topic_properties_update(alter_configs_resource& resource) {
                   cfg.value,
                   kafka::config_resource_operation::set,
                   storage::ntp_config::default_datalake_enabled);
+                continue;
+            }
+            if (cfg.name == topic_property_datalake_translation_debounce_ms) {
+                parse_and_set_optional_duration(
+                  update.properties.datalake_translation_debounce_ms,
+                  cfg.value,
+                  kafka::config_resource_operation::set);
                 continue;
             }
 

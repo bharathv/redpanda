@@ -308,6 +308,13 @@ create_topic_properties_update(
                   storage::ntp_config::default_datalake_enabled);
                 continue;
             }
+            if (cfg.name == topic_property_datalake_translation_debounce_ms) {
+                parse_and_set_optional_duration(
+                  update.properties.datalake_translation_debounce_ms,
+                  cfg.value,
+                  op);
+                continue;
+            }
 
         } catch (const validation_error& e) {
             vlog(

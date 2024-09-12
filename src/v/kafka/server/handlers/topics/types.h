@@ -96,6 +96,10 @@ static constexpr std::string_view topic_property_mpx_virtual_cluster_id
 static constexpr std::string_view topic_property_datalake_enabled
   = "redpanda.datalake.enabled";
 
+static constexpr std::string_view
+  topic_property_datalake_translation_debounce_ms
+  = "redpanda.datalake.translation.debounce.ms";
+
 // Kafka topic properties that is not relevant for Redpanda
 // Or cannot be altered with kafka alter handler
 static constexpr std::array<std::string_view, 20> allowlist_topic_noop_confs = {

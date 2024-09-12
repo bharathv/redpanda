@@ -34,6 +34,8 @@ public:
     static constexpr bool default_remote_delete{true};
     static constexpr bool legacy_remote_delete{false};
     static constexpr bool default_datalake_enabled{false};
+    static constexpr std::chrono::milliseconds
+      default_datalake_translation_debounce_ms{60000};
 
     static constexpr std::chrono::milliseconds read_replica_retention{3600000};
 
@@ -78,6 +80,9 @@ public:
         std::optional<std::chrono::milliseconds> flush_ms;
         std::optional<size_t> flush_bytes;
         bool datalake_enabled{default_datalake_enabled};
+        std::optional<std::chrono::milliseconds>
+          datalake_translation_debounce_ms{
+            default_datalake_translation_debounce_ms};
 
         friend std::ostream&
         operator<<(std::ostream&, const default_overrides&);
@@ -304,6 +309,13 @@ public:
     bool datalake_enabled() const {
         return _overrides ? _overrides->datalake_enabled
                           : default_datalake_enabled;
+    }
+
+    std::chrono::milliseconds datalake_translation_debounce_ms() const {
+        return _overrides
+                 ? _overrides->datalake_translation_debounce_ms.value_or(
+                   default_datalake_translation_debounce_ms)
+                 : default_datalake_translation_debounce_ms;
     }
 
 private:

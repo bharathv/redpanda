@@ -255,6 +255,10 @@ to_cluster_type(const creatable_topic& t) {
       = get_bool_value(config_entries, topic_property_datalake_enabled)
           .value_or(storage::ntp_config::default_datalake_enabled);
 
+    cfg.properties.datalake_translation_debounce_ms
+      = get_duration_value<std::chrono::milliseconds>(
+        config_entries, topic_property_datalake_translation_debounce_ms, true);
+
     schema_id_validation_config_parser schema_id_validation_config_parser{
       cfg.properties};
 

@@ -945,6 +945,9 @@ topic_table::apply(update_topic_properties_cmd cmd, model::offset o) {
       updated_properties.datalake_enabled,
       overrides.datalake_enabled,
       storage::ntp_config::default_datalake_enabled);
+    incremental_update(
+      updated_properties.datalake_translation_debounce_ms,
+      overrides.datalake_translation_debounce_ms);
 
     auto& properties = tp->second.get_configuration().properties;
     // no configuration change, no need to generate delta
