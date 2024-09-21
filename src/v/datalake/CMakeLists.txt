@@ -2,7 +2,6 @@ find_package(Arrow REQUIRED)
 find_package(Parquet REQUIRED)
 find_package(Protobuf REQUIRED)
 
-
 v_cc_library(
   NAME datalake
   SRCS
@@ -13,7 +12,10 @@ v_cc_library(
     record_multiplexer.cc
     schemaless_translator.cc
     translation_tracking_stm.cc
+    datalake_manager.cc
+    partition_translator.cc
   DEPS
+    v::datalake_coordinator
     v::storage
     Seastar::seastar
     Arrow::arrow_shared
@@ -22,4 +24,5 @@ v_cc_library(
     v::iceberg
 )
 
+add_subdirectory(coordinator)
 add_subdirectory(tests)

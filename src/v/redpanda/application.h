@@ -27,6 +27,7 @@
 #include "cluster/tx_coordinator_mapper.h"
 #include "config/node_config.h"
 #include "crypto/ossl_context_service.h"
+#include "datalake/datalake_manager.h"
 #include "features/fwd.h"
 #include "finjector/stress_fiber.h"
 #include "kafka/client/configuration.h"
@@ -342,6 +343,8 @@ private:
 
     // instantiated only in recovery mode
     std::unique_ptr<cluster::tx_manager_migrator> _tx_manager_migrator;
+
+    ss::sharded<datalake::datalake_manager> _datalake_manager;
 
     ss::sharded<ss::abort_source> _as;
 };

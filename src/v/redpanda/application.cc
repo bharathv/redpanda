@@ -84,6 +84,7 @@
 #include "config/seed_server.h"
 #include "config/types.h"
 #include "crypto/ossl_context_service.h"
+#include "datalake/coordinator/state_machine.h"
 #include "datalake/translation_tracking_stm.h"
 #include "features/feature_table_snapshot.h"
 #include "features/fwd.h"
@@ -1425,6 +1426,20 @@ void application::wire_up_runtime_services(
           &metadata_cache,
           sched_groups.transforms_sg(),
           memory_groups().data_transforms_max_memory())
+          .get();
+
+        syschecks::systemd_message("Starting datalake manager").get();
+        construct_service(
+          _datalake_manager,
+          node_id,
+          &raft_group_manager,
+          &partition_manager,
+          &controller->get_topics_frontend(),
+          &controller->get_partition_leaders(),
+          &controller->get_shard_table(),
+          &_as,
+          sched_groups.datalake_sg(),
+          memory_groups().datalake_max_memory())
           .get();
     }
 
@@ -2836,7 +2851,8 @@ void application::start_runtime_services(
             feature_table,
             controller->get_topics_state());
           pm.register_factory<kafka::group_tx_tracker_stm_factory>();
-          pm.register_factory<datalake::stm::stm_factory>();
+          pm.register_factory<datalake::translation::stm_factory>();
+          pm.register_factory<datalake::coordinator::stm_factory>();
       })
       .get();
     partition_manager.invoke_on_all(&cluster::partition_manager::start).get();

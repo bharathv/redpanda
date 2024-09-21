@@ -14,18 +14,18 @@
 #include "cluster/state_machine_registry.h"
 #include "raft/persisted_stm.h"
 
-namespace datalake::stm {
+namespace datalake::translation {
 
 /// Tracks the progress of datalake translation and clamps the collectible
 /// offset to ensure the data is not GC-ed before translation is finished.
 class translation_tracking_stm final : public raft::persisted_stm<> {
 public:
-    static constexpr std::string_view name = "datalake_stm";
+    static constexpr std::string_view name = "datalake_translation_stm";
 
     explicit translation_tracking_stm(ss::logger&, raft::consensus*);
 
-    ss::future<> do_apply(const model::record_batch&) override;
-    model::offset max_collectible_offset() override;
+    ss::future<> do_apply(const ::model::record_batch&) override;
+    ::model::offset max_collectible_offset() override;
     ss::future<>
     apply_local_snapshot(raft::stm_snapshot_header, iobuf&& bytes) override;
 
@@ -33,19 +33,34 @@ public:
       take_local_snapshot(ssx::semaphore_units) override;
 
     ss::future<> apply_raft_snapshot(const iobuf&) final;
-    ss::future<iobuf> take_snapshot(model::offset) final;
+    ss::future<iobuf> take_snapshot(::model::offset) final;
 
     raft::consensus* raft() const { return _raft; }
 
-    ss::future<model::offset> highest_translated_offset(); 
+    ss::future<::model::offset> highest_translated_offset(
+      ::model::timeout_clock::duration timeout, ss::abort_source&);
+    ss::future<::model::offset> max_translatable_offset(
+      ::model::timeout_clock::duration timeout, ss::abort_source&);
+    ss::future<::model::timestamp> last_succesful_translation(
+      ::model::timeout_clock::duration timeout, ss::abort_source&);
+    std::chrono::milliseconds translation_debounce_ms() const;
 
 private:
     struct snapshot
       : serde::envelope<snapshot, serde::version<0>, serde::compat_version<0>> {
-        model::offset highest_translated_offset;
-        auto serde_fields() { return std::tie(highest_translated_offset); }
+        ::model::offset highest_translated_offset;
+        ::model::offset max_translatable_offset;
+        ::model::timestamp last_successful_translation_ts;
+        auto serde_fields() {
+            return std::tie(
+              highest_translated_offset,
+              max_translatable_offset,
+              last_successful_translation_ts);
+        }
     };
-    model::offset _highest_translated_offset{};
+    ::model::offset _highest_translated_offset{};
+    ::model::offset _max_translatable_offset{0};
+    ::model::timestamp _last_successful_translation_ts{};
 };
 
 class stm_factory : public cluster::state_machine_factory {
@@ -55,4 +70,4 @@ public:
     void create(raft::state_machine_manager_builder&, raft::consensus*) final;
 };
 
-} // namespace datalake::stm
+} // namespace datalake::translation
