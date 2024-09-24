@@ -8,6 +8,7 @@ v_cc_library(
   NAME datalake
   SRCS
     arrow_translator.cc
+    datalake_manager.cc
     parquet_writer.cc
     protobuf_to_arrow_converter.cc
     proto_to_arrow_scalar.cc
