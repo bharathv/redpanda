@@ -16,6 +16,7 @@ v_cc_library(
     schemaless_translator.cc
     schema_protobuf.cc
   DEPS
+    v::datalake_coordinator
     v::storage
     Seastar::seastar
     Arrow::arrow_shared
