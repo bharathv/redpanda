@@ -228,6 +228,8 @@ public:
     /// Trigger shard placement rebalancing for partitions in this node.
     ss::future<errc> trigger_local_partition_shard_rebalance();
 
+    const metadata_cache& get_metadata_cache() const { return _metadata_cache; }
+
 private:
     using ntp_leader = std::pair<model::ntp, model::node_id>;
 
