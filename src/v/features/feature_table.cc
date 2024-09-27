@@ -120,6 +120,8 @@ std::string_view to_string_view(feature f) {
         return "remote_labels";
     case feature::partition_properties_stm:
         return "partition_properties_stm";
+    case feature::datalake_iceberg:
+        return "datalake_iceberg";
 
     /*
      * testing features
