@@ -33,6 +33,9 @@ struct translated_data_file_entry
 
     data_writer_result translation_result;
 
+    friend std::ostream&
+    operator<<(std::ostream&, const translated_data_file_entry&);
+
     auto serde_fields() {
         return std::tie(
           tp, begin_offset, end_offset, translator_term, translation_result);
@@ -52,6 +55,9 @@ struct add_translated_data_files_reply
 
     coordinator_errc errc;
 
+    friend std::ostream&
+    operator<<(std::ostream&, const add_translated_data_files_reply&);
+
     auto serde_fields() { return std::tie(errc); }
 };
 struct add_translated_data_files_request
@@ -64,11 +70,22 @@ struct add_translated_data_files_request
 
     add_translated_data_files_request() = default;
 
+    add_translated_data_files_request copy() const {
+        add_translated_data_files_request result;
+        result.tp = tp;
+        result.files = files.copy();
+        result.translator_term = translator_term;
+        return result;
+    }
+
     model::topic_partition tp;
     chunked_vector<translated_data_file_entry> files;
     model::term_id translator_term;
 
     const model::topic_partition& topic_partition() const { return tp; }
+
+    friend std::ostream&
+    operator<<(std::ostream&, const add_translated_data_files_request&);
 
     auto serde_fields() { return std::tie(tp, files, translator_term); }
 };
@@ -89,6 +106,9 @@ struct fetch_latest_data_file_reply
     // If not ok, the request processing has a problem.
     coordinator_errc errc;
 
+    friend std::ostream&
+    operator<<(std::ostream&, const fetch_latest_data_file_reply&);
+
     auto serde_fields() { return std::tie(entry, errc); }
 };
 
@@ -105,6 +125,9 @@ struct fetch_latest_data_file_request
     model::topic_partition tp;
 
     const model::topic_partition& topic_partition() const { return tp; }
+
+    friend std::ostream&
+    operator<<(std::ostream&, const fetch_latest_data_file_request&);
 
     auto serde_fields() { return std::tie(tp); }
 };

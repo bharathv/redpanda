@@ -9,6 +9,9 @@ redpanda_cc_rpc_library(
 
 redpanda_cc_library(
     name = "model",
+    srcs = [
+        "types.cc",
+    ],
     hdrs = [
         "types.h",
     ],
@@ -20,6 +23,9 @@ redpanda_cc_library(
         "//src/v/datalake:types",
         # todo: split writer further once it evolves
         "//src/v/datalake:writer",
+        "//src/v/container:fragmented_vector",
+        "//src/v/model",
+        "//src/v/utils:to_string",
     ],
 )
 
@@ -36,10 +42,12 @@ redpanda_cc_library(
     deps = [
         ":model",
         "//src/v/cluster",
+        "//src/v/container:chunked_hash_map",
         "//src/v/datalake:logger",
         "//src/v/raft",
         "//src/v/serde",
         "//src/v/serde:enum",
+        "@seastar",
     ],
 )
 

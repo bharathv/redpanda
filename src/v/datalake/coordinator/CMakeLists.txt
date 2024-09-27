@@ -12,6 +12,7 @@ v_cc_library(
         frontend.cc
         service.cc
         state_machine.cc
+        types.cc
     DEPS
         generated_datalake_coordinator_rpc
         v::cluster

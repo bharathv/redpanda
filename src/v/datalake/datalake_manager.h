@@ -14,6 +14,8 @@
 #include "base/units.h"
 #include "cluster/fwd.h"
 #include "datalake/fwd.h"
+#include "datalake/translation/partition_translator.h"
+#include "features/fwd.h"
 #include "raft/fundamental.h"
 #include "raft/fwd.h"
 #include "ssx/semaphore.h"
@@ -22,6 +24,8 @@
 #include <seastar/core/scheduling.hh>
 #include <seastar/core/sharded.hh>
 #include <seastar/util/defer.hh>
+
+#include <absl/container/btree_map.h>
 
 namespace datalake {
 
@@ -39,6 +43,7 @@ public:
       ss::sharded<cluster::topics_frontend>*,
       ss::sharded<cluster::partition_leaders_table>*,
       ss::sharded<cluster::shard_table>*,
+      ss::sharded<features::feature_table>*,
       ss::sharded<coordinator::frontend>*,
       ss::sharded<ss::abort_source>*,
       ss::scheduling_group sg,
@@ -47,6 +52,11 @@ public:
     ss::future<> stop();
 
 private:
+    using translator = std::unique_ptr<translation::partition_translator>;
+    using translator_map = absl::btree_map<raft::group_id, translator>;
+
+    void on_group_notifiction(raft::group_id);
+    ss::future<> start_translator(ss::lw_shared_ptr<cluster::partition>);
     ss::future<> stop_translator(raft::group_id);
     model::node_id _self;
     ss::sharded<raft::group_manager>* _group_mgr;
@@ -55,10 +65,21 @@ private:
     ss::sharded<cluster::topics_frontend>* _topics_frontend;
     ss::sharded<cluster::partition_leaders_table>* _leaders;
     ss::sharded<cluster::shard_table>* _shards;
+    ss::sharded<features::feature_table>* _features;
     ss::sharded<coordinator::frontend>* _coordinator_frontend;
     ss::sharded<ss::abort_source>* _as;
     ss::scheduling_group _sg;
     ss::gate _gate;
+    size_t _effective_max_translator_buffered_data;
+    ssx::semaphore _parallel_translations;
+    translator_map _translators;
+
+    using deferred_action = ss::deferred_action<std::function<void()>>;
+    std::vector<deferred_action> _deregistrations;
+    // Translation requires buffering data batches in memory for efficient
+    // output representation, this controls the maximum bytes buffered in memory
+    // before the output is flushed.
+    static constexpr size_t max_translator_buffered_data = 128_MiB;
 };
 
 } // namespace datalake

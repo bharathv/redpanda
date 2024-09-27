@@ -64,6 +64,9 @@ redpanda_cc_library(
 
 redpanda_cc_library(
     name = "types",
+    srcs = [
+        "errors.cc",
+    ],
     hdrs = [
         "errors.h",
         "fwd.h",
@@ -108,10 +111,13 @@ redpanda_cc_library(
         "//src/v/base",
         "//src/v/cluster",
         "//src/v/datalake/coordinator:frontend",
+        "//src/v/datalake/translation:partition_translator",
+        "//src/v/features",
         "//src/v/model",
         "//src/v/raft",
         "//src/v/serde",
         "//src/v/ssx:semaphore",
+        "@abseil-cpp//absl/container:btree",
         "@fmt",
         "@seastar",
     ],

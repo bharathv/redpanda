@@ -113,14 +113,16 @@ frontend::frontend(
   ss::sharded<cluster::topics_frontend>* topics_frontend,
   ss::sharded<cluster::metadata_cache>* metadata,
   ss::sharded<cluster::partition_leaders_table>* leaders,
-  ss::sharded<cluster::shard_table>* shards)
+  ss::sharded<cluster::shard_table>* shards,
+  ss::sharded<::rpc::connection_cache>* conn_cache)
   : _self(self)
   , _group_mgr(group_mgr)
   , _partition_mgr(partition_mgr)
   , _topics_frontend(topics_frontend)
   , _metadata(metadata)
   , _leaders(leaders)
-  , _shard_table(shards) {}
+  , _shard_table(shards)
+  , _connection_cache(conn_cache) {}
 
 ss::future<> frontend::stop() { return _gate.close(); }
 

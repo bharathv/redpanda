@@ -9,6 +9,7 @@
  */
 #pragma once
 #include "cluster/state_machine_registry.h"
+#include "container/chunked_hash_map.h"
 #include "datalake/coordinator/types.h"
 #include "raft/persisted_stm.h"
 
@@ -41,6 +42,17 @@ public:
       fetch_latest_data_file(fetch_latest_data_file_request);
 
 private:
+    using translated_files = chunked_vector<translated_data_file_entry>;
+    struct partition_file_info {
+        translated_files files;
+        bool request_in_progress{false};
+    };
+    using partition_to_files
+      = chunked_hash_map<model::partition_id, partition_file_info>;
+    using topic_uncommitted_files
+      = chunked_hash_map<model::topic, partition_to_files>;
+
+    topic_uncommitted_files _all_files;
 };
 class stm_factory : public cluster::state_machine_factory {
 public:

@@ -25,6 +25,11 @@ struct data_writer_result
       serde::compat_version<0>> {
     size_t row_count = 0;
 
+    friend std::ostream&
+    operator<<(std::ostream& o, const data_writer_result&) {
+        return o;
+    }
+
     auto serde_fields() { return std::tie(row_count); }
 };
 
