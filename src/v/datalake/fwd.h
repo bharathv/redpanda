@@ -15,5 +15,11 @@ namespace datalake {
 namespace coordinator {
 class frontend;
 };
+
+namespace translation {
+class translation_stm;
+class partition_translator;
+}; // namespace translation
+
 class datalake_manager;
 } // namespace datalake

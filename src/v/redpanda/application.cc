@@ -1479,6 +1479,7 @@ void application::wire_up_runtime_services(
       node_id,
       &raft_group_manager,
       &partition_manager,
+      &controller->get_topics_state(),
       &controller->get_topics_frontend(),
       &controller->get_partition_leaders(),
       &controller->get_shard_table(),

@@ -40,6 +40,8 @@ redpanda_cc_library(
         "//src/v/raft",
         "//src/v/serde",
         "//src/v/serde:enum",
+        "//src/v/container:chunked_hash_map",
+        "@seastar",
     ],
 )
 

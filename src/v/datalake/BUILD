@@ -91,11 +91,13 @@ redpanda_cc_library(
         "//src/v/base",
         "//src/v/cluster",
         "//src/v/datalake/coordinator:frontend",
+        "//src/v/datalake/translation:partition_translator",
         "//src/v/model",
         "//src/v/raft",
         "//src/v/serde",
         "//src/v/ssx:semaphore",
         "@fmt",
         "@seastar",
+        "@abseil-cpp//absl/container:btree",
     ],
 )

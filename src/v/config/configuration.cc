@@ -3363,7 +3363,7 @@ configuration::configuration()
       "is set to false, disables the feature at the cluster level effectively "
       "turning it off for all topics.",
       {.needs_restart = needs_restart::no, .visibility = visibility::user},
-      false)
+      true)
   , development_enable_cloud_topics(
       *this,
       "development_enable_cloud_topics",

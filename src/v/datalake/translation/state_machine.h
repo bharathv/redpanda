@@ -37,6 +37,15 @@ public:
 
     raft::consensus* raft() const { return _raft; }
 
+    ss::future<std::optional<model::offset>>
+    highest_translated_offset(model::timeout_clock::duration timeout);
+
+    ss::future<std::error_code> sync_with_coordinator(
+      model::offset new_translated_offset,
+      model::term_id term,
+      model::timeout_clock::duration timeout,
+      ss::abort_source&);
+
 private:
     struct snapshot
       : serde::envelope<snapshot, serde::version<0>, serde::compat_version<0>> {

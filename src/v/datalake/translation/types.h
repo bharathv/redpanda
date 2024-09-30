@@ -15,19 +15,9 @@
 
 namespace datalake::translation {
 
-struct translation_state_key
-  : serde::envelope<
-      translation_state_key,
-      serde::version<0>,
-      serde::compat_version<0>> {
-    using rpc_adl_exempt = std::true_type;
-};
-
-struct translation_state_value
-  : serde::envelope<
-      translation_state_value,
-      serde::version<0>,
-      serde::compat_version<0>> {
+struct translation_state
+  : serde::
+      envelope<translation_state, serde::version<0>, serde::compat_version<0>> {
     // highest offset that has been successfully translated (inclusive)
     model::offset highest_translated_offset;
     auto serde_fields() { return std::tie(highest_translated_offset); }
