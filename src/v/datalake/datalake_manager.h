@@ -14,6 +14,7 @@
 #include "base/seastarx.h"
 #include "base/units.h"
 #include "cluster/fwd.h"
+#include "datalake/fwd.h"
 #include "raft/fundamental.h"
 #include "raft/fwd.h"
 #include "ssx/semaphore.h"
@@ -24,10 +25,6 @@
 #include <seastar/util/defer.hh>
 
 namespace datalake {
-
-namespace coordinator {
-class frontend;
-};
 
 /*
  * Per shard instance responsible for launching and synchronizing all datalake

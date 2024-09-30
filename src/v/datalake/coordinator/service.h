@@ -7,10 +7,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0
 #include "datalake/coordinator/rpc_service.h"
-
-namespace datalake::coordinator {
-class frontend;
-}
+#include "datalake/fwd.h"
 
 namespace datalake::coordinator::rpc {
 class service final : public impl::datalake_coordinator_rpc_service {
