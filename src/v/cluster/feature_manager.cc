@@ -244,6 +244,8 @@ feature_manager::report_enterprise_features() const {
       has_schema_id_validation());
     report.set(features::license_required_feature::rbac, has_non_default_roles);
     report.set(features::license_required_feature::fips, fips_enabled());
+    report.set(
+      features::license_required_feature::datalake, cfg.iceberg_enabled());
     return report;
 }
 

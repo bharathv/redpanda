@@ -28,6 +28,7 @@ enum class license_required_feature {
     schema_id_validation,
     rbac,
     fips,
+    datalake,
 };
 
 std::ostream& operator<<(std::ostream&, license_required_feature);
