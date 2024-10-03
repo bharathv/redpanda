@@ -90,6 +90,7 @@
 #include "datalake/coordinator/frontend.h"
 #include "datalake/coordinator/service.h"
 #include "datalake/coordinator/state_machine.h"
+#include "datalake/cloud_data_io.h"
 #include "datalake/datalake_manager.h"
 #include "datalake/translation/state_machine.h"
 #include "debug_bundle/debug_bundle_service.h"
@@ -1981,10 +1982,8 @@ void application::wire_up_redpanda_services(
           "cloud topics currently requires archival storage to be enabled");
         construct_service(_reconciler, &partition_manager, &cloud_io).get();
     }
+
     if (datalake_enabled()) {
-        // Construct datalake subsystems, now that dependencies are
-        // already constructed.
-        syschecks::systemd_message("Starting datalake services").get();
         syschecks::systemd_message("Starting datalake services").get();
         construct_service(
           _datalake_coordinator_mgr,
@@ -2021,9 +2020,12 @@ void application::wire_up_redpanda_services(
           &controller->get_shard_table(),
           &feature_table,
           &_datalake_coordinator_fe,
+          &cloud_io,
           &_as,
           sched_groups.datalake_sg(),
           memory_groups().datalake_max_memory())
+          .get();
+        _datalake_manager.invoke_on_all(&datalake::datalake_manager::start)
           .get();
     }
 
