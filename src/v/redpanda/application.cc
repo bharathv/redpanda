@@ -1456,6 +1456,8 @@ void application::wire_up_runtime_services(
           sched_groups.datalake_sg(),
           memory_groups().datalake_max_memory())
           .get();
+        _datalake_manager.invoke_on_all(&datalake::datalake_manager::start)
+          .get();
     }
 
     construct_single_service(_monitor_unsafe, std::ref(feature_table));
