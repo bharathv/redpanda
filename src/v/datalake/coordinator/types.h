@@ -18,20 +18,6 @@
 
 namespace datalake::coordinator {
 
-struct translated_data_file_entry
-  : serde::envelope<
-      translated_data_file_entry,
-      serde::version<0>,
-      serde::compat_version<0>> {
-    model::topic_partition tp;
-
-    // Translated data files, expected to be contiguous, with no gaps or
-    // overlaps, ordered in increasing offset order.
-    chunked_vector<translated_offset_range> translated_ranges;
-
-    auto serde_fields() { return std::tie(tp, translated_ranges); }
-};
-
 struct add_translated_data_files_reply
   : serde::envelope<
       add_translated_data_files_reply,
@@ -42,6 +28,9 @@ struct add_translated_data_files_reply
     add_translated_data_files_reply() = default;
     explicit add_translated_data_files_reply(coordinator_errc err)
       : errc(err) {}
+
+    friend std::ostream&
+    operator<<(std::ostream&, const add_translated_data_files_reply&);
 
     coordinator_errc errc;
 
@@ -58,12 +47,27 @@ struct add_translated_data_files_request
     add_translated_data_files_request() = default;
 
     model::topic_partition tp;
-    chunked_vector<translated_data_file_entry> files;
+    // Translated data files, expected to be contiguous, with no gaps or
+    // overlaps, ordered in increasing offset order.
+    chunked_vector<translated_offset_range> ranges;
     model::term_id translator_term;
+
+    add_translated_data_files_request copy() const {
+        add_translated_data_files_request result;
+        result.tp = tp;
+        for (auto& range : ranges) {
+            result.ranges.push_back(range.copy());
+        }
+        result.translator_term = translator_term;
+        return result;
+    }
+
+    friend std::ostream&
+    operator<<(std::ostream&, const add_translated_data_files_request&);
 
     const model::topic_partition& topic_partition() const { return tp; }
 
-    auto serde_fields() { return std::tie(tp, files, translator_term); }
+    auto serde_fields() { return std::tie(tp, ranges, translator_term); }
 };
 
 struct fetch_latest_data_file_reply
@@ -86,6 +90,9 @@ struct fetch_latest_data_file_reply
     // If not ok, the request processing has a problem.
     coordinator_errc errc;
 
+    friend std::ostream&
+    operator<<(std::ostream&, const fetch_latest_data_file_reply&);
+
     auto serde_fields() { return std::tie(last_added_offset, errc); }
 };
 
@@ -102,6 +109,9 @@ struct fetch_latest_data_file_request
     model::topic_partition tp;
 
     const model::topic_partition& topic_partition() const { return tp; }
+
+    friend std::ostream&
+    operator<<(std::ostream&, const fetch_latest_data_file_request&);
 
     auto serde_fields() { return std::tie(tp); }
 };

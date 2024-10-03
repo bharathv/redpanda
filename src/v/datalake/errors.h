@@ -22,6 +22,15 @@ enum class coordinator_errc : int16_t {
     concurrent_requests,
 };
 
+constexpr bool is_retriable(coordinator_errc errc) {
+    return errc == coordinator_errc::coordinator_topic_not_exists
+           || errc == coordinator_errc::not_leader
+           || errc == coordinator_errc::timeout
+           || errc == coordinator_errc::concurrent_requests;
+}
+
+std::ostream& operator<<(std::ostream&, const coordinator_errc&);
+
 // TODO: Make an std::error_category instance for this
 enum class arrow_converter_status {
     ok,

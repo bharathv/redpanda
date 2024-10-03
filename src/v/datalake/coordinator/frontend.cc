@@ -44,15 +44,7 @@ ss::future<add_translated_data_files_reply> add_files(
     if (!crd) {
         co_return add_translated_data_files_reply{coordinator_errc::not_leader};
     }
-    chunked_vector<translated_offset_range> files;
-    for (auto& fs : req.files) {
-        // XXX: does each file need to be a vector?
-        std::move(
-          fs.translated_ranges.begin(),
-          fs.translated_ranges.end(),
-          std::back_inserter(files));
-    }
-    auto ret = co_await crd->sync_add_files(req.tp, std::move(files));
+    auto ret = co_await crd->sync_add_files(req.tp, std::move(req.ranges));
     if (ret.has_error()) {
         co_return to_rpc_errc(ret.error());
     }

@@ -64,6 +64,9 @@ redpanda_cc_library(
 
 redpanda_cc_library(
     name = "types",
+    srcs = [
+        "errors.cc",
+    ],
     hdrs = [
         "errors.h",
         "fwd.h",
