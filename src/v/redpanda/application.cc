@@ -1436,7 +1436,8 @@ void application::wire_up_runtime_services(
           &controller->get_topics_frontend(),
           &metadata_cache,
           &controller->get_partition_leaders(),
-          &controller->get_shard_table())
+          &controller->get_shard_table(),
+          &_connection_cache)
           .get();
 
         construct_service(
@@ -1448,6 +1449,7 @@ void application::wire_up_runtime_services(
           &controller->get_topics_frontend(),
           &controller->get_partition_leaders(),
           &controller->get_shard_table(),
+          &feature_table,
           &_datalake_coordinator_fe,
           &_as,
           sched_groups.datalake_sg(),
