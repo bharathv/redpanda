@@ -180,6 +180,7 @@ redpanda_cc_library(
         ":state",
         ":state_update",
         "//src/v/cluster",
+        "//src/v/container:chunked_hash_map",
         "//src/v/datalake:logger",
         "//src/v/model",
         "//src/v/raft",

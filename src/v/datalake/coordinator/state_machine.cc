@@ -18,6 +18,7 @@
 #include "ssx/future-util.h"
 
 #include <seastar/coroutine/as_future.hh>
+#include <seastar/util/defer.hh>
 
 namespace datalake::coordinator {
 
@@ -124,13 +125,15 @@ model::offset coordinator_stm::max_collectible_offset() { return {}; }
 
 ss::future<>
 coordinator_stm::apply_local_snapshot(raft::stm_snapshot_header, iobuf&&) {
-    co_return;
+    return ss::now();
 }
 
 ss::future<raft::stm_snapshot>
 coordinator_stm::take_local_snapshot(ssx::semaphore_units) {
-    return ss::make_exception_future<raft::stm_snapshot>(
-      std::runtime_error{"not implemented exception"});
+    // temporarily ignore snapshots, to be fixed later.
+    // throwing here results in uncaught exceptions, so a dummy snapshot
+    // at offset 0 avoids that.
+    co_return raft::stm_snapshot::create(0, model::offset{0}, iobuf{});
 }
 
 ss::future<> coordinator_stm::apply_raft_snapshot(const iobuf&) { co_return; }

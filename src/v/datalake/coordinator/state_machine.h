@@ -11,6 +11,7 @@
 #include "cluster/state_machine_registry.h"
 #include "datalake/coordinator/state.h"
 #include "datalake/coordinator/types.h"
+#include "datalake/fwd.h"
 #include "raft/persisted_stm.h"
 
 namespace datalake::coordinator {
