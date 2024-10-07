@@ -22,8 +22,6 @@
 #include "resource_mgmt/io_priority.h"
 #include "ssx/future-util.h"
 
-#include "datalake/data_writer_interface.h"
-
 namespace datalake::translation {
 
 static constexpr std::chrono::milliseconds translation_jitter{500};
@@ -253,7 +251,6 @@ bool partition_translator::can_continue() const {
 
 ss::future<> partition_translator::do_translate() {
     while (can_continue()) {
-        co_await ss::sleep_abortable(_jitter.next_duration(), _as);
         backoff retry_policy{_jitter.base_duration()};
         auto result = co_await retry_policy.retry(
           max_attempts,
@@ -268,6 +265,7 @@ ss::future<> partition_translator::do_translate() {
         if (result) {
             _reconcile = needs_reconciliation::no;
         }
+        co_await ss::sleep_abortable(_jitter.next_duration(), _as);
     }
 }
 

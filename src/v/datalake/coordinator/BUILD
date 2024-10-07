@@ -183,6 +183,7 @@ redpanda_cc_library(
         "//src/v/container:chunked_hash_map",
         "//src/v/datalake:logger",
         "//src/v/model",
+        "//src/v/datalake:types",
         "//src/v/raft",
         "//src/v/serde",
         "//src/v/serde:enum",
