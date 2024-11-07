@@ -129,6 +129,11 @@ class ManyPartitionsTest(PreallocNodesTest):
                 # job. We should figure out how to make it faster for this
                 # use-case.
                 'cloud_storage_enable_scrubbing': False,
+
+                # Iceberg configs
+                'iceberg_enabled': True,
+                'iceberg_translation_interval_ms_default': 10000,
+                'iceberg_catalog_commit_interval_ms': 30000,
             },
             # Configure logging the same way a user would when they have
             # very many partitions: set logs with per-partition messages
@@ -138,7 +143,8 @@ class ManyPartitionsTest(PreallocNodesTest):
                                          'storage': 'warn',
                                          'storage-gc': 'warn',
                                          'raft': 'warn',
-                                         'offset_translator': 'warn'
+                                         'offset_translator': 'warn',
+                                         'datalake': 'debug'
                                      }),
             **kwargs)
         self.rpk = RpkTool(self.redpanda)
@@ -761,7 +767,8 @@ class ManyPartitionsTest(PreallocNodesTest):
             self.redpanda,
             replication_factor=3,
             mib_per_partition=DEFAULT_MIB_PER_PARTITION,
-            topic_partitions_per_shard=DEFAULT_PARTITIONS_PER_SHARD)
+            topic_partitions_per_shard=DEFAULT_PARTITIONS_PER_SHARD,
+            tiered_storage_enabled=True)
         self.redpanda.start()
 
         # We have other OMB benchmark tests, but this one runs at the
