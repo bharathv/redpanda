@@ -714,6 +714,8 @@ struct configuration final : public config_store {
     property<std::optional<ss::sstring>> iceberg_rest_catalog_token;
     property<std::chrono::milliseconds> iceberg_rest_catalog_request_timeout_ms;
 
+    property<bool> iceberg_delete;
+
     configuration();
 
     error_map_t load(const YAML::Node& root_node);

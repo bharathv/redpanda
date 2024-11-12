@@ -3766,6 +3766,17 @@ configuration::configuration()
       "catalog before aborting the request",
       {.needs_restart = needs_restart::no, .visibility = visibility::tunable},
       10s)
+  , iceberg_delete(
+      *this,
+      "iceberg_delete",
+      "Default value for the redpanda.iceberg.delete topic property that "
+      "determines if the corresponding Iceberg table is deleted upon deleting "
+      "the topic.",
+      meta{
+        .needs_restart = needs_restart::no,
+        .visibility = visibility::user,
+      },
+      true)
   , development_enable_cloud_topics(
       *this,
       "development_enable_cloud_topics",
