@@ -50,3 +50,8 @@ class QueryEngineBase(ABC):
         query = f"select count(*) from {table}"
         with self.run_query(query) as cursor:
             return int(cursor.fetchone()[0])
+
+    def max_translated_offset(self, table) -> int:
+        query = f"select max(redpanda_offset) from {table}"
+        with self.run_query(query) as cursor:
+            return int(cursor.fetchone()[0])
