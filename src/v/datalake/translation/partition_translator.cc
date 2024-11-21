@@ -77,6 +77,20 @@ ss::futurize_t<FuncRet> retry_with_backoff(
     }
 }
 
+static std::unique_ptr<record_translator>
+make_record_translator(model::iceberg_mode mode) {
+    switch (mode) {
+    case model::iceberg_mode::disabled:
+        vassert(
+          false,
+          "Cannot make record translator when iceberg is disabled, logic bug.");
+    case model::iceberg_mode::key_value:
+        return std::make_unique<key_value_translator>();
+    case model::iceberg_mode::value_schema_id_prefix:
+        return std::make_unique<default_translator>();
+    }
+}
+
 } // namespace
 
 static constexpr std::chrono::milliseconds translation_jitter{500};
@@ -108,7 +122,8 @@ partition_translator::partition_translator(
   // TODO: type resolver and record translator should be constructed based on
   // topic configs.
   , _type_resolver(type_resolver)
-  , _record_translator(std::make_unique<default_translator>())
+  , _record_translator(
+      make_record_translator(_partition->log()->config().iceberg_mode()))
   , _partition_proxy(std::make_unique<kafka::partition_proxy>(
       kafka::make_partition_proxy(_partition)))
   , _jitter{translation_interval, translation_jitter}
