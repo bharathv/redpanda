@@ -31,6 +31,7 @@ public:
         virtual void add_bytes_fetched(uint64_t) = 0;
         virtual void add_bytes_fetched_from_follower(uint64_t) = 0;
         virtual void add_schema_id_validation_failed() = 0;
+        virtual void update_iceberg_translation_offset_lag(uint64_t) = 0;
         virtual void setup_metrics(const model::ntp&) = 0;
         virtual void clear_metrics() = 0;
         virtual ~impl() noexcept = default;
@@ -66,6 +67,10 @@ public:
         _impl->add_schema_id_validation_failed();
     }
 
+    void update_iceberg_translation_offset_lag(uint64_t new_lag) {
+        _impl->update_iceberg_translation_offset_lag(new_lag);
+    }
+
     void clear_metrics() { _impl->clear_metrics(); }
 
 private:
@@ -88,6 +93,10 @@ public:
         ++_schema_id_validation_records_failed;
     };
 
+    void update_iceberg_translation_offset_lag(uint64_t new_lag) final {
+        _iceberg_translation_offset_lag = new_lag;
+    }
+
     void clear_metrics() final;
 
 private:
@@ -105,6 +114,7 @@ private:
     uint64_t _bytes_fetched{0};
     uint64_t _bytes_fetched_from_follower{0};
     uint64_t _schema_id_validation_records_failed{0};
+    uint64_t _iceberg_translation_offset_lag{0};
     metrics::internal_metric_groups _metrics;
     metrics::public_metric_groups _public_metrics;
 };
