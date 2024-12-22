@@ -78,6 +78,8 @@ public:
       model::tx_seq,
       model::timeout_clock::duration);
 
+    ss::future<get_producers_reply> get_producers(get_producers_request);
+
     ss::future<> stop();
 
 private:
@@ -276,6 +278,9 @@ private:
       tx_metadata,
       model::timeout_clock::duration,
       bool ignore_update_ts);
+
+    ss::future<get_producers_reply>
+      get_producers_locally(get_producers_request);
 
     friend tx_gateway;
 };
