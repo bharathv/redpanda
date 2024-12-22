@@ -418,6 +418,13 @@ void admin_server::register_debug_routes() {
           return get_partition_state_handler(std::move(req));
       });
 
+    register_route<user>(
+      seastar::httpd::debug_json::get_partition_producers,
+      [this](std::unique_ptr<ss::http::request> req)
+        -> ss::future<ss::json::json_return_type> {
+          return get_producers_state_handler(std::move(req));
+      });
+
     register_route<superuser>(
       ss::httpd::debug_json::cpu_profile,
       [this](std::unique_ptr<ss::http::request> req)
@@ -808,6 +815,66 @@ admin_server::get_partition_state_handler(
         response.replicas.push(std::move(replica));
     }
     co_return ss::json::json_return_type(std::move(response));
+}
+
+ss::future<ss::json::json_return_type>
+admin_server::get_producers_state_handler(
+  std::unique_ptr<ss::http::request> req) {
+    const model::ntp ntp = parse_ntp_from_request(req->param);
+    auto timeout = std::chrono::duration_cast<model::timeout_clock::duration>(
+      10s);
+    auto result = co_await _tx_gateway_frontend.local().get_producers(
+      cluster::get_producers_request{ntp, timeout});
+    if (result.error_code != cluster::tx::errc::none) {
+        throw ss::httpd::server_error_exception(fmt::format(
+          "Error {} processing partition state for ntp: {}",
+          result.error_code,
+          ntp));
+    }
+    vlog(
+      adminlog.debug,
+      "producers for {}, size: {}",
+      ntp,
+      result.producers.size());
+    ss::httpd::debug_json::partition_producers producers;
+    producers.ntp = fmt::format("{}", ntp);
+    for (auto& producer : result.producers) {
+        ss::httpd::debug_json::partition_producer_state producer_state;
+        for (const auto& req : producer.inflight_requests) {
+            ss::httpd::debug_json::idempotent_producer_request_state inflight;
+            inflight.first_sequence = req.first_sequence;
+            inflight.last_sequence = req.last_sequence;
+            inflight.term = req.term();
+            producer_state.inflight_idempotent_requests.push(
+              std::move(inflight));
+        }
+        for (const auto& req : producer.finished_requests) {
+            ss::httpd::debug_json::idempotent_producer_request_state finished;
+            finished.first_sequence = req.first_sequence;
+            finished.last_sequence = req.last_sequence;
+            finished.term = req.term();
+            producer_state.finished_idempotent_requests.push(
+              std::move(finished));
+        }
+        producer_state.last_update_timestamp = producer.last_update.value_or(
+          model::timestamp{-1})();
+        producer_state.transaction_begin_offset
+          = producer.tx_begin_offset.value_or(model::offset{-1})();
+        producer_state.transaction_last_offset
+          = producer.tx_end_offset.value_or(model::offset{-1})();
+        producer_state.transaction_sequence = producer.tx_seq.value_or(
+          model::tx_seq{-1})();
+        producer_state.transaction_timeout_ms
+          = producer.tx_timeout.value_or(model::timeout_clock::duration(-1))
+              .count();
+        producer_state.transaction_coordinator_partition
+          = producer.coordinator_partition.value_or(model::partition_id{-1})();
+        producer_state.transaction_group_id = producer.group_id.value_or(
+          "<none>");
+        producers.producers.push(std::move(producer_state));
+        co_await ss::coroutine::maybe_yield();
+    }
+    co_return ss::json::json_return_type(std::move(producers));
 }
 
 ss::future<ss::json::json_return_type> admin_server::get_node_uuid_handler() {
