@@ -381,6 +381,40 @@
             ]
         },
         {
+            "path": "/v1/debug/producers/{namespace}/{topic}/{partition}",
+            "operations": [
+                {
+                    "method": "GET",
+                    "summary": "Get low level debug information about producers producing to the input partition, queried from the leader of the partition.",
+                    "type": "partition_producers",
+                    "nickname": "get_partition_producers",
+                    "produces": [
+                        "application/json"
+                    ],
+                    "parameters": [
+                        {
+                            "name": "namespace",
+                            "in": "path",
+                            "required": true,
+                            "type": "string"
+                        },
+                        {
+                            "name": "topic",
+                            "in": "path",
+                            "required": true,
+                            "type": "string"
+                        },
+                        {
+                            "name": "partition",
+                            "in": "path",
+                            "required": true,
+                            "type": "integer"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
             "path": "/v1/debug/set_storage_failure_injection_enabled",
             "operations": [
                 {
@@ -1172,6 +1206,89 @@
                         "type": "partition_replica_state"
                     },
                     "description": "All replicas of this partition"
+                }
+            }
+        },
+        "idempotent_producer_request_state": {
+            "id": "idempotent_producer_request_state",
+            "description": "Debug state of an idempotent producer request to a partition.",
+            "properties": {
+                "first_sequence": {
+                    "type": "int",
+                    "description": "Kafka first sequence of the request"
+                },
+                "last_sequence": {
+                    "type": "int",
+                    "description": "Kafka last sequence of the request"
+                },
+                "term": {
+                    "type": "long",
+                    "description": "Raft term of the idempotent request"
+                }
+            }
+        },
+        "partition_producer_state": {
+            "id": "partition_producer_state",
+            "description": "Debug state of a single producer producing to a partition ",
+            "properties": {
+                "inflight_idempotent_requests": {
+                    "type": "array",
+                    "items": {
+                        "type": "idempotent_producer_request_state"
+                    },
+                    "description": "List of requests currently in flight."
+                },
+                "finished_idempotent_requests": {
+                    "type": "array",
+                    "items": {
+                        "type": "idempotent_producer_request_state"
+                    },
+                    "description": "List of finished requests."
+                },
+                "last_update_timestamp": {
+                    "type": "long",
+                    "description": "Last update timestamp for this producer or -1 if there is none."
+                },
+                "transaction_begin_offset": {
+                    "type": "long",
+                    "description": "First offset of the transaction if one in progress or -1."
+                },
+                "transaction_last_offset": {
+                    "type": "long",
+                    "description": "Last offset of the transaction if one in progress or -1."
+                },
+                "transaction_sequence": {
+                    "type": "int",
+                    "description": "Sequence number of the transaction if one is in progress or -1."
+                },
+                "transaction_timeout_ms": {
+                    "type": "long",
+                    "description": "Transaction timeout in ms if one is in progress or -1."
+                },
+                "transaction_coordinator_partition": {
+                    "type": "int",
+                    "description": "Transaction coordinator partition coordinating the transaction if one is in progress or -1."
+                },
+                "transaction_group_id": {
+                    "type": "string",
+                    "description": "Group id of transaction, only relevant for group partitions."
+                }
+            }
+        },
+        "partition_producers": {
+            "id": "partition_producers",
+            "description": "Debug information about producers producing to a partition.",
+            "properties": {
+                "ntp": {
+                    "type": "string",
+                    "description": "Partition that is queried"
+                },
+                "producers": {
+                    "type": "array",
+                    "items": {
+                        "type": "partition_producer_state"
+                    },
+                    "description": "All producers to this partition"
                 }
             }
         },
