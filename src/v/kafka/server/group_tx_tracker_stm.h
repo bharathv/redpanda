@@ -104,12 +104,16 @@ private:
         auto serde_fields() { return std::tie(transactions); }
     };
 
+    void handle_group_metadata(group_metadata_kv);
+
     void maybe_add_tx_begin_offset(
       kafka::group_id, model::producer_identity, model::offset);
 
     void maybe_end_tx(kafka::group_id, model::producer_identity);
 
     all_txs_t _all_txs;
+
+    group_metadata_serializer _serializer;
 };
 
 class group_tx_tracker_stm_factory : public cluster::state_machine_factory {
