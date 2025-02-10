@@ -172,6 +172,9 @@ upload_files(
 
 } // namespace
 translation_task::translation_task(
+  const model::ntp& ntp,
+  model::revision_id topic_revision,
+  std::unique_ptr<parquet_file_writer_factory> writer_factory,
   cloud_data_io& cloud_io,
   schema_manager& schema_mgr,
   type_resolver& type_resolver,
@@ -185,20 +188,8 @@ translation_task::translation_task(
   , _record_translator(&record_translator)
   , _table_creator(&table_creator)
   , _invalid_record_action(invalid_record_action)
-  , _location_provider(std::move(location_provider)) {}
-
-ss::future<
-  checked<coordinator::translated_offset_range, translation_task::errc>>
-translation_task::translate(
-  const model::ntp& ntp,
-  model::revision_id topic_revision,
-  std::unique_ptr<parquet_file_writer_factory> writer_factory,
-  custom_partitioning_enabled is_custom_partitioning_enabled,
-  model::record_batch_reader reader,
-  const remote_path& remote_path_prefix,
-  retry_chain_node& rcn,
-  lazy_abort_source& lazy_as) {
-    record_multiplexer mux(
+  , _location_provider(std::move(location_provider))
+  , _multiplexer(
       ntp,
       topic_revision,
       std::move(writer_factory),
@@ -207,12 +198,22 @@ translation_task::translate(
       *_record_translator,
       *_table_creator,
       _invalid_record_action,
-      _location_provider,
-      lazy_as);
-    // Write local files
-    auto mux_result = co_await std::move(reader).consume(
-      std::move(mux), _read_timeout + model::timeout_clock::now());
+      _location_provider) {}
 
+ss::future<> translation_task::translate_once(
+  model::record_batch_reader reader, ss::abort_source& as) {
+    return _multiplexer.multiplex(
+      std::move(reader), _read_timeout + model::timeout_clock::now(), as);
+}
+
+ss::future<
+  checked<coordinator::translated_offset_range, translation_task::errc>>
+translation_task::finish(
+  custom_partitioning_enabled is_custom_partitioning_enabled,
+  const remote_path& remote_path_prefix,
+  retry_chain_node& rcn,
+  ss::abort_source& as) && {
+    auto mux_result = co_await std::move(_multiplexer).finish();
     if (mux_result.has_error()) {
         vlog(
           datalake_log.warn,
@@ -234,7 +235,10 @@ translation_task::translate(
       .start_offset = write_result.start_offset,
       .last_offset = write_result.last_offset,
     };
-
+    lazy_abort_source las{[&as]() {
+        return as.abort_requested() ? std::make_optional("stop requested")
+                                    : std::nullopt;
+    }};
     // Data files.
     {
         auto upload_res = co_await upload_files(
@@ -243,13 +247,12 @@ translation_task::translate(
           is_custom_partitioning_enabled,
           remote_path_prefix,
           rcn,
-          lazy_as);
+          las);
         if (upload_res.has_error()) {
             co_return upload_res.error();
         }
         ret.files = std::move(upload_res.value());
     }
-
     // DLQ files.
     {
         auto dlq_upload_res = co_await upload_files(
@@ -258,13 +261,12 @@ translation_task::translate(
           is_custom_partitioning_enabled,
           remote_path_prefix,
           rcn,
-          lazy_as);
+          las);
         if (dlq_upload_res.has_error()) {
             co_return dlq_upload_res.error();
         }
         ret.dlq_files = std::move(dlq_upload_res.value());
     }
-
     co_return ret;
 }
 

@@ -16,7 +16,7 @@
 #include "datalake/partitioning_writer.h"
 #include "datalake/schema_identifier.h"
 #include "model/record.h"
-#include "utils/lazy_abort_source.h"
+#include "model/record_batch_reader.h"
 #include "utils/prefix_logger.h"
 
 #include <seastar/core/future.hh>
@@ -53,11 +53,17 @@ public:
       record_translator& record_translator,
       table_creator&,
       model::iceberg_invalid_record_action,
-      location_provider,
-      lazy_abort_source& as);
+      location_provider);
 
-    ss::future<ss::stop_iteration> operator()(model::record_batch batch);
-    ss::future<result<write_result, writer_error>> end_of_stream();
+    ss::future<> multiplex(
+      model::record_batch_reader reader,
+      model::timeout_clock::time_point deadline,
+      ss::abort_source& as);
+
+    ss::future<ss::stop_iteration>
+    do_multiplex(model::record_batch batch, ss::abort_source&);
+
+    ss::future<result<write_result, writer_error>> finish() &&;
 
 private:
     // Handles the given record components of a record that is invalid for the
@@ -80,7 +86,6 @@ private:
     table_creator& _table_creator;
     model::iceberg_invalid_record_action _invalid_record_action;
     location_provider _location_provider;
-    lazy_abort_source& _as;
     chunked_hash_map<
       record_schema_components,
       std::unique_ptr<partitioning_writer>>

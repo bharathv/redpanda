@@ -380,6 +380,7 @@ redpanda_cc_gtest(
         "serde_parquet_writer_test.cc",
     ],
     deps = [
+        ":test_data_writer",
         "//src/v/bytes:iostream",
         "//src/v/datalake:serde_parquet_writer",
         "//src/v/datalake/tests:test_data",

@@ -38,6 +38,16 @@ auto schema_resolver = std::make_unique<binary_type_resolver>();
 auto translator = std::make_unique<default_translator>();
 const auto ntp = model::ntp{};
 const auto rev = model::revision_id{123};
+
+class noop_mem_tracker : public writer_mem_tracker {
+public:
+    ss::future<> maybe_reserve_memory(size_t) override {
+        return ss::make_ready_future<>();
+    }
+    void update_current_memory_usage(size_t) override {}
+    void release() override {}
+};
+
 } // namespace
 
 class TranslateTaskTest
@@ -90,13 +100,8 @@ public:
         return std::make_unique<datalake::local_parquet_file_writer_factory>(
           datalake::local_path(tmp_dir.get_path()),
           "test-prefix",
-          ss::make_shared<datalake::serde_parquet_writer_factory>());
-    }
-
-    lazy_abort_source& never_abort() {
-        static thread_local lazy_abort_source noop = {
-          []() { return std::nullopt; }};
-        return noop;
+          ss::make_shared<datalake::serde_parquet_writer_factory>(),
+          std::make_unique<noop_mem_tracker>());
     }
 
     template<typename R>
@@ -172,6 +177,9 @@ private:
 
 TEST_F(TranslateTaskTest, TestHappyPathTranslation) {
     datalake::translation_task task(
+      ntp,
+      rev,
+      get_writer_factory(),
       cloud_io,
       *schema_mgr,
       *schema_resolver,
@@ -180,24 +188,22 @@ TEST_F(TranslateTaskTest, TestHappyPathTranslation) {
       model::iceberg_invalid_record_action::dlq_table,
       location_provider);
 
-    auto result = task
-                    .translate(
-                      ntp,
-                      rev,
-                      get_writer_factory(),
+    task.translate_once(make_batches(10, 16), as).get();
+    task.translate_once(make_batches(10, 16, model::offset{160}), as).get();
+    auto result = std::move(task)
+                    .finish(
                       translation_task::custom_partitioning_enabled::yes,
-                      make_batches(10, 16),
                       datalake::remote_path("test/location/1"),
                       test_rcn,
-                      never_abort())
+                      as)
                     .get();
-
     ASSERT_FALSE(result.has_error());
 
     auto transformed_range = std::move(result.value());
     // check offset range
+    // 320 records in two batches of 10 * 16 -- offset range [0, 319]
     ASSERT_EQ(transformed_range.start_offset, kafka::offset(0));
-    ASSERT_EQ(transformed_range.last_offset, kafka::offset(159));
+    ASSERT_EQ(transformed_range.last_offset, kafka::offset(319));
     ASSERT_EQ(transformed_range.files.size(), 1);
 
     // check that the resulting files were actually uploaded to the cloud
@@ -208,6 +214,9 @@ TEST_F(TranslateTaskTest, TestHappyPathTranslation) {
 
 TEST_F(TranslateTaskTest, TestDataFileMissing) {
     datalake::translation_task task(
+      ntp,
+      rev,
+      get_writer_factory(),
       cloud_io,
       *schema_mgr,
       *schema_resolver,
@@ -219,24 +228,23 @@ TEST_F(TranslateTaskTest, TestDataFileMissing) {
     deleter del(tmp_dir.get_path().string());
     del.start();
     auto stop_deleter = ss::defer([&del] { del.stop().get(); });
-    auto result = task
-                    .translate(
-                      ntp,
-                      rev,
-                      get_writer_factory(),
+    task.translate_once(make_batches(10, 16), as).get();
+    auto result = std::move(task)
+                    .finish(
                       translation_task::custom_partitioning_enabled::yes,
-                      make_batches(10, 16),
                       datalake::remote_path("test/location/1"),
                       test_rcn,
-                      never_abort())
+                      as)
                     .get();
-
     ASSERT_TRUE(result.has_error());
     ASSERT_EQ(result.error(), datalake::translation_task::errc::file_io_error);
 }
 
 TEST_F(TranslateTaskTest, TestUploadError) {
     datalake::translation_task task(
+      ntp,
+      model::revision_id{123},
+      get_writer_factory(),
       cloud_io,
       *schema_mgr,
       *schema_resolver,
@@ -252,19 +260,14 @@ TEST_F(TranslateTaskTest, TestUploadError) {
       http_test_utils::response{
         .body = "failed!",
         .status = ss::http::reply::status_type::internal_server_error});
-
-    auto result = task
-                    .translate(
-                      ntp,
-                      model::revision_id{123},
-                      get_writer_factory(),
+    task.translate_once(make_batches(10, 16), as).get();
+    auto result = std::move(task)
+                    .finish(
                       translation_task::custom_partitioning_enabled::yes,
-                      make_batches(10, 16),
                       datalake::remote_path("test/location/1"),
                       test_rcn,
-                      never_abort())
+                      as)
                     .get();
-
     ASSERT_TRUE(result.has_error());
     ASSERT_EQ(result.error(), datalake::translation_task::errc::cloud_io_error);
     // check no data files are left behind

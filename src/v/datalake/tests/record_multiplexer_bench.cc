@@ -249,12 +249,15 @@ share_batches(chunked_vector<model::record_batch>& batches) {
 struct counting_consumer {
     size_t total_bytes = 0;
     datalake::record_multiplexer mux;
+    ss::abort_source& as;
+
     ss::future<ss::stop_iteration> operator()(model::record_batch&& batch) {
         total_bytes += batch.size_bytes();
-        return mux(std::move(batch));
+        return mux.do_multiplex(std::move(batch), as);
     }
+
     ss::future<counting_consumer> end_of_stream() {
-        auto res = co_await mux.end_of_stream();
+        auto res = co_await std::move(mux).finish();
         if (res.has_error()) [[unlikely]] {
             throw std::runtime_error(
               fmt::format("failed to end stream: {}", res.error()));
@@ -301,7 +304,8 @@ public:
     ss::future<size_t> run_bench() {
         auto reader = model::make_fragmented_memory_record_batch_reader(
           share_batches(_batch_data));
-        auto consumer = counting_consumer{.mux = create_mux()};
+        ss::abort_source as;
+        auto consumer = counting_consumer{.mux = create_mux(), .as = as};
 
         perf_tests::start_measuring_time();
         auto res = co_await reader.consume(
@@ -337,8 +341,7 @@ private:
           _table_creator,
           model::iceberg_invalid_record_action::dlq_table,
           datalake::location_provider(
-            scoped_remote->remote.local().provider(), bucket_name),
-          _as);
+            scoped_remote->remote.local().provider(), bucket_name));
     }
 
     ss::future<>

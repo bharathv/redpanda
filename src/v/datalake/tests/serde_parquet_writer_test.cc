@@ -1,6 +1,7 @@
 #include "bytes/iostream.h"
 #include "datalake/serde_parquet_writer.h"
 #include "datalake/tests/test_data.h"
+#include "datalake/tests/test_data_writer.h"
 #include "iceberg/tests/value_generator.h"
 
 #include <seastar/core/seastar.hh>
@@ -11,8 +12,10 @@ TEST(SerdeParquetWriterTest, CheckIfTheWriterWritesData) {
     auto schema = test_schema(iceberg::field_required::no);
     iobuf target;
 
+    datalake::noop_mem_tracker mem_tracker;
     auto writer = datalake::serde_parquet_writer_factory{}
-                    .create_writer(schema, make_iobuf_ref_output_stream(target))
+                    .create_writer(
+                      schema, make_iobuf_ref_output_stream(target), mem_tracker)
                     .get();
 
     auto v = iceberg::tests::make_value(

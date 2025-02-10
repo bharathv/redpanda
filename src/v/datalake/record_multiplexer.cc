@@ -26,6 +26,27 @@
 
 namespace datalake {
 
+namespace {
+
+template<typename Func>
+requires requires(Func f, model::record_batch batch) {
+    { f(std::move(batch)) } -> std::same_as<ss::future<ss::stop_iteration>>;
+}
+class relaying_consumer {
+public:
+    explicit relaying_consumer(Func f)
+      : _func(std::move(f)) {}
+
+    ss::future<ss::stop_iteration> operator()(model::record_batch b) {
+        return _func(std::move(b));
+    }
+    void end_of_stream() {}
+
+private:
+    Func _func;
+};
+} // namespace
+
 record_multiplexer::record_multiplexer(
   const model::ntp& ntp,
   model::revision_id topic_revision,
@@ -35,8 +56,7 @@ record_multiplexer::record_multiplexer(
   record_translator& record_translator,
   table_creator& table_creator,
   model::iceberg_invalid_record_action invalid_record_action,
-  location_provider location_provider,
-  lazy_abort_source& as)
+  location_provider location_provider)
   : _log(datalake_log, fmt::format("{}", ntp))
   , _ntp(ntp)
   , _topic_revision(topic_revision)
@@ -46,16 +66,23 @@ record_multiplexer::record_multiplexer(
   , _record_translator(record_translator)
   , _table_creator(table_creator)
   , _invalid_record_action(invalid_record_action)
-  , _location_provider(std::move(location_provider))
-  , _as(as) {}
+  , _location_provider(std::move(location_provider)) {}
 
-ss::future<ss::stop_iteration>
-record_multiplexer::operator()(model::record_batch batch) {
-    if (_as.abort_requested()) {
-        vlog(
-          _log.debug,
-          "Abort requested, stopping translation, reason: {}",
-          _as.abort_reason());
+ss::future<> record_multiplexer::multiplex(
+  model::record_batch_reader reader,
+  model::timeout_clock::time_point deadline,
+  ss::abort_source& as) {
+    co_await std::move(reader).consume(
+      relaying_consumer{[this, &as](model::record_batch b) mutable {
+          return do_multiplex(std::move(b), as);
+      }},
+      deadline);
+}
+
+ss::future<ss::stop_iteration> record_multiplexer::do_multiplex(
+  model::record_batch batch, ss::abort_source& as) {
+    if (as.abort_requested()) {
+        vlog(_log.debug, "Abort requested, stopping translation");
         co_return ss::stop_iteration::yes;
     }
     if (batch.compressed()) {
@@ -66,11 +93,8 @@ record_multiplexer::operator()(model::record_batch batch) {
     auto it = model::record_batch_iterator::create(batch);
 
     while (it.has_next()) {
-        if (_as.abort_requested()) {
-            vlog(
-              _log.debug,
-              "Abort requested, stopping translation, reason: {}",
-              _as.abort_reason());
+        if (as.abort_requested()) {
+            vlog(_log.debug, "Abort requested, stopping translation");
             co_return ss::stop_iteration::yes;
         }
         auto record = it.next();
@@ -260,7 +284,7 @@ record_multiplexer::operator()(model::record_batch batch) {
 }
 
 ss::future<result<record_multiplexer::write_result, writer_error>>
-record_multiplexer::end_of_stream() {
+record_multiplexer::finish() && {
     if (_error) {
         co_return *_error;
     }
