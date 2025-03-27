@@ -72,6 +72,22 @@ ss::futurize_t<FuncRet> retry_with_backoff(
     }
 }
 
+bool is_recoverable_translation_error(translation_errc err) {
+    switch (err) {
+    case no_data:
+    case file_io_error:
+    case cloud_io_error:
+    case flush_error:
+    case discard_error:
+    case shutting_down:
+        return false;
+    case ok:
+    case oom_error:
+    case time_limit_exceeded:
+        return true;
+    }
+}
+
 } // namespace
 
 partition_translator::partition_translator(
@@ -224,7 +240,7 @@ partition_translator::fetch_translation_offsets(retry_chain_node& rcn) {
     co_return offsets;
 }
 
-ss::future<partition_translator::finish_immediately>
+ss::future<translation_errc>
 partition_translator::run_one_translation_iteration(
   kafka::offset begin_offset) {
     _lag_tracking->notify_new_data_for_translation(begin_offset);
@@ -234,51 +250,28 @@ partition_translator::run_one_translation_iteration(
     // time slice (i.e. scheduled in), then translate until the time
     // slice expires or we run out of data
     std::exception_ptr unexpected_ex = nullptr;
-    auto result = finish_immediately::no;
-    try {
-        co_await _ready_to_translate.wait(
-          [this] { return _inflight_translation_state.has_value(); });
-        auto& as = _inflight_translation_state->as;
-        auto reader = co_await _data_source->make_log_reader(
-          begin_offset, datalake_priority(), as);
-        if (!reader) {
-            co_return result;
-        }
-        vlog(
-          _logger.trace, "starting translation from offset: {}", begin_offset);
-        ss::timer<scheduling::clock> cancellation_timer;
-        cancellation_timer.set_callback([&as] {
-            as.request_abort_ex(translator_time_quota_exceeded_error{});
-        });
+    co_await _ready_to_translate.wait(
+      [this] { return _inflight_translation_state.has_value(); });
+    auto& as = _inflight_translation_state->as;
+    auto reader = co_await _data_source->make_log_reader(
+      begin_offset, datalake_priority(), as);
+    if (!reader) {
+        // nothing to translate
+        co_return translation_errc::ok;
+    }
 
-        auto translation_f = _translation_ctx
-                               ->translate_now(
-                                 std::move(reader.value()),
-                                 begin_offset,
-                                 _inflight_translation_state->as)
-                               .finally(
-                                 [this] { return _translation_ctx->flush(); });
+    vlog(_logger.trace, "Starting translation from offset: {}", begin_offset);
+
+    ss::timer<scheduling::clock> cancellation_timer;
+    cancellation_timer.set_callback(
+      [&as] { as.request_abort_ex(translator_time_quota_exceeded_error{}); });
+    auto translation_result = translation_errc::discard_error;
+    try {
         cancellation_timer.arm(_inflight_translation_state->translate_for);
-        co_await std::move(translation_f).finally([&cancellation_timer] {
-            cancellation_timer.cancel();
-        });
-        _inflight_translation_state->as.check();
-    } catch (const translator_out_of_memory_error&) {
-        // We just swallow the exception because the underlying result state
-        // is still safe to be flushed.
-        vlog(
-          _logger.warn,
-          "Translation exceeded memory budget, result will be flushed "
-          "immediately");
-        // We force a finish immediately to make forward progress and avoid
-        // cases where the translator is stuck in this memory exhaustion loop.
-        result = finish_immediately::yes;
-    } catch (const translator_time_quota_exceeded_error&) {
-        // We just swallow the exception because the underlying result state
-        // is still safe to be flushed.
-        vlog(
-          _logger.debug,
-          "Translation attempt exceeded scheduler time limit quota");
+        translation_result = co_await _translation_ctx->translate_now(
+          std::move(reader.value()),
+          begin_offset,
+          _inflight_translation_state->as);
     } catch (...) {
         // unknown exception or shutdown exception.
         unexpected_ex = std::current_exception();
@@ -288,9 +281,17 @@ partition_translator::run_one_translation_iteration(
         vlogl(
           datalake_log,
           log_level,
-          "Translation attempt ran into an unexpected exception: {}",
+          "[{}] Translation attempt ran into an unexpected exception: {}",
+          id(),
           unexpected_ex);
     }
+    auto flush_result = co_await _translation_ctx->flush();
+    if (
+      translation_result == translation_errc::ok
+      && flush_result != translation_errc::ok) {
+        translation_result = flush_result;
+    }
+    cancellation_timer.cancel();
     // inflight_translation_state tracks a single scheduled chunk of
     // work, so we reset it to nullopt for the next time we're scheduled
     // in
@@ -299,10 +300,10 @@ partition_translator::run_one_translation_iteration(
     _scheduler->notify_done(id());
 
     if (unexpected_ex) {
-        co_await _translation_ctx->discard();
         std::rethrow_exception(unexpected_ex);
     }
-    co_return result;
+    vlog(_logger.trace, "Translation iteration result: {}", translation_result);
+    co_return translation_result;
 }
 
 ss::future<bool> partition_translator::finish_inflight_translation(
@@ -406,19 +407,36 @@ ss::future<> partition_translator::translate_until_stopped() {
         if (!offsets) {
             continue;
         }
-        auto finish_now = finish_immediately::no;
+
+        auto translation_result = translation_errc::ok;
         if (offsets->next_translation_begin_offset) {
             // new data is available to translate
             auto translate_f = co_await ss::coroutine::as_future(
               run_one_translation_iteration(
                 offsets->next_translation_begin_offset.value()));
             if (translate_f.failed()) {
+                translation_result = translation_errc::discard_error;
                 translate_f.ignore_ready_future();
-                continue;
+            } else {
+                translation_result = translate_f.get();
             }
-            finish_now = translate_f.get();
         }
-        if (finish_now || should_finish_inflight_translation()) {
+        if (!is_recoverable_translation_error(translation_result)) {
+            vlog(
+              _logger.warn,
+              "Translation failed with unrecoverable error: {}, discarding "
+              "existing translation state",
+              translation_result);
+            co_await _translation_ctx->discard();
+            continue;
+        }
+
+        // OOM indicates memory pressure and we may have accumulated enough
+        // data to finish. We finish and reset the inflight translation state
+        // to free up all memory resources.
+        auto finish_now = translation_result == translation_errc::oom_error
+                          || should_finish_inflight_translation();
+        if (finish_now) {
             auto success = co_await finish_inflight_translation(
               offsets->coordinator_lto, rcn);
             if (!success) {

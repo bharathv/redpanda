@@ -7,7 +7,7 @@ redpanda_cc_library(
         "types.h",
     ],
     include_prefix = "datalake/translation",
-    visibility = [":__subpackages__"],
+    visibility = ["//visibility:public"],
     deps = [
         "//src/v/model",
         "//src/v/serde",
@@ -92,6 +92,7 @@ redpanda_cc_library(
         "record_multiplexer.h",
     ],
     implementation_deps = [
+        ":model",
         "//src/v/base",
         "//src/v/datalake:catalog_schema_manager",
         "//src/v/datalake:conversion_outcome",
