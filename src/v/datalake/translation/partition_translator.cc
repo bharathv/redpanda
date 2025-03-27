@@ -281,8 +281,12 @@ partition_translator::run_one_translation_iteration(
     } catch (...) {
         // unknown exception or shutdown exception.
         unexpected_ex = std::current_exception();
-        vlog(
-          _logger.warn,
+        auto log_level = ssx::is_shutdown_exception(unexpected_ex)
+                           ? ss::log_level::debug
+                           : ss::log_level::error;
+        vlogl(
+          datalake_log,
+          log_level,
           "Translation attempt ran into an unexpected exception: {}",
           unexpected_ex);
     }
