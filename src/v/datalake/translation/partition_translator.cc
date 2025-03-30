@@ -11,6 +11,7 @@
 #include "datalake/translation/partition_translator.h"
 
 #include "datalake/logger.h"
+#include "datalake/translation/errors.h"
 #include "resource_mgmt/io_priority.h"
 #include "utils/to_string.h"
 

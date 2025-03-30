@@ -3,6 +3,7 @@ load("//bazel:build.bzl", "redpanda_cc_library")
 redpanda_cc_library(
     name = "model",
     hdrs = [
+        "errors.h",
         "types.h",
     ],
     include_prefix = "datalake/translation",
@@ -106,6 +107,7 @@ redpanda_cc_library(
     include_prefix = "datalake/translation",
     visibility = [":__subpackages__"],
     deps = [
+        ":model",
         "//src/v/container:chunked_hash_map",
         "//src/v/datalake:location",
         "//src/v/datalake:partitioning_writer",
@@ -154,6 +156,9 @@ redpanda_cc_library(
     ],
     hdrs = [
         "deps.h",
+    ],
+    implementation_deps = [
+        ":model",
     ],
     include_prefix = "datalake/translation",
     visibility = [":__subpackages__"],

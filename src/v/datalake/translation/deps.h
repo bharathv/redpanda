@@ -27,24 +27,6 @@
 
 namespace datalake::translation {
 
-class translator_out_of_memory_error final : public std::runtime_error {
-public:
-    explicit translator_out_of_memory_error()
-      : std::runtime_error("translator_out_of_memory") {}
-};
-
-class translator_shutdown_error final : public std::runtime_error {
-public:
-    explicit translator_shutdown_error()
-      : std::runtime_error("translator_shutdown") {}
-};
-
-class translator_time_quota_exceeded_error final : public std::runtime_error {
-public:
-    explicit translator_time_quota_exceeded_error()
-      : std::runtime_error("translator_time_quota_exceeded") {}
-};
-
 class noop_mem_tracker : public writer_mem_tracker {
 public:
     ss::future<reservation_error>
