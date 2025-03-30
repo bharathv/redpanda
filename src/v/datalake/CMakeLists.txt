@@ -41,7 +41,6 @@ v_cc_library(
   SRCS
     catalog_schema_manager.cc
     data_writer_interface.cc
-    record_multiplexer.cc
     record_schema_resolver.cc
     record_translator.cc
     schema_registry.cc
@@ -54,7 +53,6 @@ v_cc_library(
     base_types.cc
     cloud_data_io.cc
     table_creator.cc
-    translation_task.cc
     schema_parquet.cc
     values_parquet.cc
     local_parquet_file_writer.cc
