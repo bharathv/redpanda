@@ -1440,6 +1440,17 @@ void application::wire_up_runtime_services(
           .invoke_on_all(&kafka::datalake_throttle_manager::start)
           .get();
     }
+
+    syschecks::systemd_message("Creating kafka usage manager frontend").get();
+    construct_service(
+      usage_manager,
+      controller.get(),
+      std::ref(controller->get_health_monitor()),
+      std::ref(storage),
+      ss::sharded_parameter(
+        [this] { return make_datalake_usage_aggregator(); }))
+      .get();
+
     construct_single_service(_monitor_unsafe, std::ref(feature_table));
 
     construct_service(_debug_bundle_service, &storage.local().kvs()).get();
@@ -2177,16 +2188,6 @@ void application::wire_up_redpanda_services(
       controller.get())
       .get();
 
-    syschecks::systemd_message("Creating kafka usage manager frontend").get();
-    construct_service(
-      usage_manager,
-      controller.get(),
-      std::ref(controller->get_health_monitor()),
-      std::ref(storage),
-      ss::sharded_parameter(
-        [this] { return make_datalake_usage_aggregator(); }))
-      .get();
-
     syschecks::systemd_message("Creating tx coordinator frontend").get();
     construct_single_service_sharded(
       tx_topic_manager,
@@ -2418,6 +2419,12 @@ bool application::datalake_enabled() {
 
 ss::shared_ptr<kafka::datalake_usage_api>
 application::make_datalake_usage_aggregator() {
+    if (datalake_enabled()) {
+        return ss::make_shared<datalake::default_datalake_usage_api_impl>(
+          controller.get(),
+          &controller->get_topics_state(),
+          &_datalake_coordinator_fe);
+    }
     return ss::make_shared<datalake::disabled_datalake_usage_api_impl>(
       controller.get());
 }
