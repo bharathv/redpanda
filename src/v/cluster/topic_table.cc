@@ -2020,7 +2020,6 @@ void topic_table::change_partition_replicas(
         update_revision,
         policy,
         &_probe));
-    auto previous_assignment = current_assignment.replicas;
     // replace partition replica set
     current_assignment.replicas = new_assignment;
     _topics_map_revision++;
