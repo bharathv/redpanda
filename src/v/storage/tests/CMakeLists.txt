@@ -179,3 +179,13 @@ rp_test(
   ARGS "-- -c 1"
   LABELS storage
 )
+
+rp_test(
+  UNIT_TEST
+  BINARY_NAME kv_override
+  SOURCES
+      kvstore_override.cc
+  LIBRARIES v::cluster v::seastar_testing_main v::storage_test_utils v::model_test_utils
+  LABELS storage
+  ARGS "-- -c 1"
+)
