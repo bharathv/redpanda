@@ -40,6 +40,7 @@
 #include "raft/types.h"
 #include "raft/voter_priority_tracker.h"
 #include "ssx/semaphore.h"
+#include "ssx/watchdog.h"
 #include "storage/log.h"
 #include "storage/snapshot.h"
 #include "storage/types.h"
@@ -565,6 +566,25 @@ private:
       = ss::bool_class<struct update_last_quorum_index>;
     using flush_delay_t
       = std::variant<std::chrono::milliseconds, std::chrono::years>;
+
+    template<typename Func>
+    auto spawn_with_gate_and_monitor(Func&& func, ss::sstring str) {
+        struct monitor_state {
+            std::optional<ssx::watchdog> monitor;
+        };
+        auto st = ss::lw_shared_ptr<monitor_state>();
+        auto sub = _as.subscribe(
+          [this, st, debug = std::move(str)]() mutable noexcept {
+              st->monitor.emplace(10s, [this, debug = std::move(debug)] {
+                  vlog(
+                    _ctxlog.warn,
+                    "{} did not complete in 10s after shutdown",
+                    debug);
+              });
+          });
+        return ssx::spawn_with_gate_then(_bg, std::forward<Func>(func))
+          .finally([sub = std::move(sub)]() mutable { });
+    }
     // all these private functions assume that we are under exclusive operations
     // via the _op_sem
     void do_step_down(std::string_view);
