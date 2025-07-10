@@ -14,6 +14,16 @@ redpanda_cc_library(
 )
 
 redpanda_cc_library(
+    name = "errors",
+    hdrs = ["errors.h"],
+    include_prefix = "kafka/client",
+    deps = [
+        "//src/v/base",
+        "//src/v/kafka/protocol",
+    ],
+)
+
+redpanda_cc_library(
     name = "api_types",
     hdrs = ["api_types.h"],
     include_prefix = "kafka/client",
