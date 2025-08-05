@@ -62,3 +62,21 @@ redpanda_cc_library(
         "@seastar",
     ],
 )
+
+redpanda_cc_library(
+    name = "remote_deps",
+    srcs = [
+        "remote_deps_impl.cc",
+    ],
+    hdrs = [
+        "remote_deps_impl.h",
+    ],
+    include_prefix = "cluster_link/replication",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":deps",
+        "//src/v/cluster_link:logger",
+        "//src/v/model",
+        "@seastar",
+    ],
+)
