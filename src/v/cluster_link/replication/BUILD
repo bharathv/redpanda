@@ -76,6 +76,7 @@ redpanda_cc_library(
     deps = [
         ":deps",
         "//src/v/cluster_link:logger",
+        "//src/v/cluster",
         "//src/v/model",
         "@seastar",
     ],

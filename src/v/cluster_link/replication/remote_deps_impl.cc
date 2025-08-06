@@ -13,23 +13,25 @@
 #include "cluster/partition.h"
 
 namespace cluster_link::replication {
-ss::future<> remote_partition_data_source::start() {
+ss::future<> remote_partition_source::start() {
     // Implementation for starting the remote partition data source
     return ss::now();
 }
 
-ss::future<> remote_partition_data_source::stop() noexcept {
+ss::future<> remote_partition_source::stop() noexcept {
     // Implementation for stopping the remote partition data source
     return ss::now();
 }
 
-ss::future<> remote_partition_data_source::reset(kafka::offset) {
+ss::future<> remote_partition_source::reset(kafka::offset) {
     // Implementation for resetting the remote partition data source
     return ss::now();
 }
 
 ss::future<data_source::data>
-remote_partition_data_source::fetch_next(ss::abort_source&) {}
+remote_partition_source::fetch_next(ss::abort_source&) {
+    co_return data_source::data{};
+}
 
 ss::future<> local_partition_sink::start() {
     // Implementation for starting the local partition sink
@@ -44,17 +46,22 @@ kafka::offset local_partition_sink::last_replicated_offset() const {
 }
 
 raft::replicate_stages local_partition_sink::replicate(
-  chunked_vector<::model::record_batch> batches,
-  ::model::timeout_clock::duration timeout,
-  ss::abort_source& as) {
+  chunked_vector<::model::record_batch>,
+  ::model::timeout_clock::duration,
+  ss::abort_source&) {
     // Implementation for replicating data to the local partition
-    return {};
+    return raft::replicate_stages{raft::errc::success};
 }
 
 void local_partition_sink::notify_replicator_failure(::model::term_id term) {
+    if (_gate.is_closed()) {
+        return;
+    }
     if (_partition->term() == term) {
-        _partition->raft()->step_down(
-          fmt::format("Unable to start replicator in term: {}", term));
+        ssx::spawn_with_gate(_gate, [this, term] {
+            return _partition->raft()->step_down(
+              fmt::format("Unable to start replicator in term: {}", term));
+        });
     }
 }
 

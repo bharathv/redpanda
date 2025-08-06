@@ -12,13 +12,14 @@
 
 #include "cluster/fwd.h"
 #include "cluster_link/replication/deps.h"
+#include <seastar/core/gate.hh>
 
 namespace cluster_link::replication {
 
 /*
  * Source backed by partition data on a remote cluster.
  */
-class remote_partition_data_source : public data_source {
+class remote_partition_source : public data_source {
 public:
     ss::future<> start() override;
     ss::future<> stop() noexcept override;
@@ -50,6 +51,7 @@ public:
     void notify_replicator_failure(model::term_id) override;
 
 private:
+    ss::gate _gate;
     ss::lw_shared_ptr<cluster::partition> _partition;
 };
 
