@@ -64,12 +64,12 @@ redpanda_cc_library(
 )
 
 redpanda_cc_library(
-    name = "remote_deps",
+    name = "partition_source_sink_deps",
     srcs = [
-        "remote_deps_impl.cc",
+        "partition_deps_impl.cc",
     ],
     hdrs = [
-        "remote_deps_impl.h",
+        "partition_deps_impl.h",
     ],
     include_prefix = "cluster_link/replication",
     visibility = ["//visibility:public"],
