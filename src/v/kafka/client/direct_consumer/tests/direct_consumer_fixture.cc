@@ -85,13 +85,11 @@ model::node_id consumer_fixture::get_partition_leader(const model::ntp& ntp) {
     return leader_id.value();
 }
 
-void consumer_fixture::produce_to_partition(
+ss::future<> consumer_fixture::produce_to_partition(
   const model::topic& topic, int partition, size_t record_count) {
     model::ntp ntp(
       model::kafka_namespace, topic, model::partition_id(partition));
-
     auto leader_id = get_partition_leader(ntp);
-
     vlog(
       logger.debug,
       "[broker: {}] Produce {} records to {}",
@@ -99,15 +97,23 @@ void consumer_fixture::produce_to_partition(
       record_count,
       ntp);
 
-    ::tests::kafka_produce_transport producer(
-      instance(leader_id)->make_kafka_client().get());
-    producer.start().get();
-    auto deferred_close = ss::defer([&producer] { producer.stop().get(); });
-
-    auto records = ::tests::kv_t::sequence(0, record_count, partition);
-    producer
-      .produce_to_partition(topic, model::partition_id(partition), records)
-      .get();
+    return instance(leader_id)->make_kafka_client().then(
+      [topic, partition, record_count](auto transport) mutable {
+          return ss::do_with(
+            ::tests::kafka_produce_transport(std::move(transport)),
+            [topic, partition, record_count](auto& producer) mutable {
+                return producer.start().then(
+                  [&producer, topic, partition, record_count] {
+                      return producer
+                        .produce_to_partition(
+                          topic,
+                          model::partition_id(partition),
+                          ::tests::kv_t::sequence(0, record_count, partition))
+                        .then([](auto) {})
+                        .finally([&producer] { return producer.stop(); });
+                  });
+            });
+      });
 }
 
 chunked_hash_map<model::topic_partition, chunked_vector<model::record_batch>>
@@ -178,6 +184,15 @@ void consumer_fixture::wait_for_visible_leadership_shuffle(
       << "never detected leadership change, test precondition failed";
 }
 
+std::unique_ptr<kafka::client::direct_consumer>
+basic_consumer_fixture::make_consumer() {
+    return std::make_unique<kafka::client::direct_consumer>(
+      *cluster,
+      direct_consumer::configuration{
+        .with_sessions = fetch_sessions_enabled{
+          GetParam() == session_config::with_sessions}});
+}
+
 void basic_consumer_fixture::SetUp() {
     create_node_application(model::node_id{0});
     create_node_application(model::node_id{1});
@@ -191,12 +206,23 @@ void basic_consumer_fixture::SetUp() {
       direct_consumer::configuration{
         .with_sessions = fetch_sessions_enabled{
           GetParam() == session_config::with_sessions}});
+    StartConsumer();
+}
+
+void basic_consumer_fixture::StartConsumer() {
+    consumer = make_consumer();
     consumer->start().get();
 }
 
 void basic_consumer_fixture::TearDown() {
-    consumer->stop().get();
+    StopConsumer();
     cluster->stop().get();
+}
+
+void basic_consumer_fixture::StopConsumer() {
+    if (consumer) {
+        consumer->stop().get();
+    }
 }
 
 void basic_consumer_fixture::maybe_toggle_fetch_sessions() {

@@ -36,7 +36,7 @@ public:
 
     model::node_id get_partition_leader(const model::ntp& ntp);
 
-    void produce_to_partition(
+    ss::future<> produce_to_partition(
       const model::topic& topic, int partition, size_t record_count);
 
     chunked_hash_map<
@@ -74,6 +74,11 @@ class basic_consumer_fixture
 public:
     void SetUp() override;
     void TearDown() override;
+    virtual void StartConsumer();
+    virtual void StopConsumer();
     void maybe_toggle_fetch_sessions();
+
+protected:
+    std::unique_ptr<kafka::client::direct_consumer> make_consumer();
 };
 } // namespace kafka::client::tests
