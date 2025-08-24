@@ -407,5 +407,6 @@ private:
 
     ::model::node_id _self;
     model::id_t _next_link_id{0};
+    int64_t _term_counter{0};
 };
 } // namespace cluster_link::tests

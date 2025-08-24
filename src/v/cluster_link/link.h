@@ -45,8 +45,10 @@ public:
 
     void update_config(model::metadata);
 
-    ss::future<>
-    handle_on_leadership_change(::model::ntp ntp, ntp_leader is_ntp_leader);
+    ss::future<> handle_on_leadership_change(
+      ::model::ntp ntp,
+      ntp_leader is_ntp_leader,
+      std::optional<::model::term_id>);
 
     const model::metadata& config() const;
 

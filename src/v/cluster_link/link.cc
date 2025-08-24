@@ -156,14 +156,17 @@ void link::update_config(model::metadata config) {
     }
 }
 
-ss::future<>
-link::handle_on_leadership_change(::model::ntp ntp, ntp_leader is_ntp_leader) {
+ss::future<> link::handle_on_leadership_change(
+  ::model::ntp ntp,
+  ntp_leader is_ntp_leader,
+  std::optional<::model::term_id> term) {
     vlog(
       cllog.trace,
-      "Cluster link {} handling leadership change for {}: {}",
+      "Cluster link {} handling leadership change for {}: {}, term: {}",
       _config.name,
       ntp,
-      is_ntp_leader);
+      is_ntp_leader,
+      term);
 
     // todo: add debouncing here so that we do not trigger multiple
     // reconciliation loops at once.

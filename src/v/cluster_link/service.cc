@@ -161,12 +161,14 @@ void service::register_notifications() {
             partition) {
             auto is_leader = partition && partition->is_leader ? ntp_leader::yes
                                                                : ntp_leader::no;
+            auto term = partition ? std::make_optional(partition->term)
+                                  : std::nullopt;
             using ntype = cluster::partition_change_notifier::notification_type;
             switch (type) {
             case ntype::leadership_change:
             case ntype::partition_replica_assigned:
             case ntype::partition_replica_unassigned:
-                _manager->handle_partition_state_change(ntp, is_leader);
+                _manager->handle_partition_state_change(ntp, is_leader, term);
                 break;
             case ntype::partition_properties_change:
                 // TODO: once we have partition properties
