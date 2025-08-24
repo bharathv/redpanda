@@ -17,7 +17,10 @@
 #include "cluster_link/logger.h"
 #include "cluster_link/manager.h"
 #include "cluster_link/model/types.h"
+#include "cluster_link/replication/deps_impl.h"
+#include "cluster_link/replication/mux_remote_consumer.h"
 #include "cluster_link/source_topic_syncer.h"
+#include "kafka/client/direct_consumer/direct_consumer.h"
 
 namespace cluster_link {
 
@@ -25,6 +28,8 @@ using ::cluster::cluster_link::frontend;
 using kafka::data::rpc::partition_leader_cache;
 using kafka::data::rpc::partition_manager;
 using kafka::data::rpc::topic_metadata_cache;
+using data_src_factory = replication::remote_data_source_factory;
+using data_sink_factory = replication::local_partition_data_sink_factory;
 
 class link_registry_adapter : public link_registry {
 public:
@@ -80,6 +85,11 @@ private:
 
 class default_link_factory : public link_factory {
 public:
+    explicit default_link_factory(
+      ss::sharded<cluster::partition_manager>* partition_manager)
+      : link_factory()
+      , _partition_manager(partition_manager) {}
+
     static constexpr auto link_reconciler_period = 5min;
     std::unique_ptr<link> create_link(
       ::model::node_id self,
@@ -93,8 +103,36 @@ public:
           manager,
           link_reconciler_period,
           std::move(config),
-          std::move(cluster_connection));
+          std::move(cluster_connection),
+          std::make_unique<data_src_factory>(
+            make_remote_consumer(*cluster_connection)),
+          std::make_unique<data_sink_factory>(*_partition_manager));
     }
+
+private:
+    std::unique_ptr<replication::mux_remote_consumer>
+    make_remote_consumer(kafka::client::cluster& cluster) {
+        // todo: make these configurable
+        kafka::client::direct_consumer::configuration cfg;
+        cfg.min_bytes = 1;
+        cfg.max_fetch_size = 1_MiB;
+        cfg.partition_max_bytes = 512_KiB;
+        cfg.max_wait_time = 200ms;
+        cfg.isolation_level = ::model::isolation_level::read_committed;
+        cfg.max_buffered_bytes = 5_MiB;
+        cfg.max_buffered_elements = std::numeric_limits<size_t>::max();
+        cfg.with_sessions = kafka::client::fetch_sessions_enabled::yes;
+        static constexpr size_t partition_max_buffered_bytes = 5_MiB;
+        static constexpr auto fetch_max_wait = 100ms;
+        auto direct_consumer = std::make_unique<kafka::client::direct_consumer>(
+          cluster, cfg);
+
+        return std::make_unique<replication::mux_remote_consumer>(
+          std::move(direct_consumer),
+          partition_max_buffered_bytes,
+          fetch_max_wait);
+    }
+    ss::sharded<cluster::partition_manager>* _partition_manager;
 };
 
 service::service(
@@ -126,7 +164,7 @@ ss::future<> service::start() {
         _shard_table, _partition_manager, _smp_group),
       topic_metadata_cache::make_default(_metadata_cache),
       std::make_unique<link_registry_adapter>(&_plf->local()),
-      std::make_unique<default_link_factory>(),
+      std::make_unique<default_link_factory>(_partition_manager),
       std::make_unique<cluster_factory>(),
       30s); // Temporary until we have a proper configuration for this
 

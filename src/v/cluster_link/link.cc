@@ -13,7 +13,6 @@
 
 #include "cluster_link/logger.h"
 #include "cluster_link/manager.h"
-#include "model/namespace.h"
 #include "ssx/future-util.h"
 
 #include <seastar/coroutine/as_future.hh>
@@ -56,12 +55,19 @@ link::link(
   manager* manager,
   ss::lowres_clock::duration task_reconciler_interval,
   model::metadata config,
-  std::unique_ptr<kafka::client::cluster> cluster_connection)
+  std::unique_ptr<kafka::client::cluster> cluster_connection,
+  std::unique_ptr<replication::data_source_factory> data_source_factory,
+  std::unique_ptr<replication::data_sink_factory> data_sink_factory)
   : _self(self)
   , _link_id(link_id)
   , _manager(manager)
   , _config(std::move(config))
   , _cluster_connection(std::move(cluster_connection))
+  , _replication_mgr(
+      // todo: fix me
+      ss::default_scheduling_group(),
+      std::move(data_source_factory),
+      std::move(data_sink_factory))
   , _task_reconciler_interval(task_reconciler_interval) {}
 
 ss::future<> link::start() {
@@ -69,6 +75,7 @@ ss::future<> link::start() {
       cllog.info, "Starting cluster link {} ({})", _config.name, _config.uuid);
     // Allow exception to propagate to the caller
     co_await _cluster_connection->start();
+    co_await _replication_mgr.start();
     co_await run_task_reconciler();
     _task_reconciler.set_callback([this] {
         ssx::spawn_with_gate(_gate, [this] { return run_task_reconciler(); });
@@ -81,6 +88,7 @@ ss::future<> link::stop() noexcept {
       cllog.info, "Stopping cluster link {} ({})", _config.name, _config.uuid);
     _task_reconciler.cancel();
     _as.request_abort();
+    co_await _replication_mgr.stop();
     co_await _gate.close();
 
     for (auto& [_, t] : _tasks) {
@@ -168,6 +176,12 @@ ss::future<> link::handle_on_leadership_change(
       is_ntp_leader,
       term);
 
+    if (is_ntp_leader) {
+        vassert(term, "Term must be set when leadership is assumed: {}", ntp);
+        _replication_mgr.start_replicator(ntp, *term);
+    } else {
+        _replication_mgr.stop_replicator(ntp, term);
+    }
     // todo: add debouncing here so that we do not trigger multiple
     // reconciliation loops at once.
     co_await run_task_reconciler();

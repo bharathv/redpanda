@@ -14,6 +14,7 @@
 #include "cluster/cluster_link/tests/utils.h"
 #include "cluster_link/link.h"
 #include "cluster_link/manager.h"
+#include "cluster_link/replication/tests/deps_test_impl.h"
 #include "cluster_link/tests/deps.h"
 #include "test_utils/test.h"
 
@@ -22,6 +23,11 @@
 #include <gtest/gtest.h>
 
 using namespace std::chrono_literals;
+
+using data_src_factory
+  = cluster_link::replication::tests::random_data_source_factory;
+using data_sink_factory
+  = cluster_link::replication::tests::accounting_sink_factory;
 
 namespace cluster_link::tests {
 
@@ -218,7 +224,9 @@ test_link::test_link(
       manager,
       task_reconciler_interval,
       std::move(metadata),
-      std::move(cluster_connection))
+      std::move(cluster_connection),
+      std::make_unique<data_src_factory>(),
+      std::make_unique<data_sink_factory>())
   , _link_test(link_test) {}
 
 ss::future<> test_link::start() {
@@ -368,7 +376,9 @@ public:
           manager,
           1s,
           std::move(metadata),
-          std::move(cluster_connection));
+          std::move(cluster_connection),
+          std::make_unique<data_src_factory>(),
+          std::make_unique<data_sink_factory>());
     }
 };
 

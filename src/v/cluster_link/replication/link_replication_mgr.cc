@@ -93,7 +93,7 @@ ss::future<> link_replication_manager::do_stop_replicator(
     auto it = _replicators.find(ntp);
     if (it == _replicators.end() || (term && (*term < it->second->term()))) {
         vlog(
-          cllog.warn,
+          cllog.trace,
           "No replicator found for {} at term {}, skipping stop",
           ntp,
           term);
