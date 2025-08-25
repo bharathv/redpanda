@@ -84,7 +84,7 @@ public:
       model::id_t link_id,
       manager* manager,
       model::metadata config,
-      kafka::client::cluster cluster_connection)
+      std::unique_ptr<kafka::client::cluster> cluster_connection)
       = 0;
 };
 
@@ -101,6 +101,7 @@ public:
     cluster_factory& operator=(cluster_factory&&) = delete;
     virtual ~cluster_factory() = default;
 
-    virtual kafka::client::cluster create_cluster(const model::metadata& md);
+    virtual std::unique_ptr<kafka::client::cluster>
+    create_cluster(const model::metadata& md);
 };
 } // namespace cluster_link
