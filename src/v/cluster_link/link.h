@@ -39,7 +39,7 @@ public:
     virtual ~link() = default;
 
     virtual ss::future<> start();
-    virtual ss::future<> stop();
+    virtual ss::future<> stop() noexcept;
 
     ss::future<result<void>> register_task(task_factory*);
 

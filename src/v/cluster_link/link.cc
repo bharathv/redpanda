@@ -76,7 +76,7 @@ ss::future<> link::start() {
     _task_reconciler.arm_periodic(_task_reconciler_interval);
 }
 
-ss::future<> link::stop() {
+ss::future<> link::stop() noexcept {
     vlog(
       cllog.info, "Stopping cluster link {} ({})", _config.name, _config.uuid);
     _task_reconciler.cancel();
@@ -89,7 +89,16 @@ ss::future<> link::stop() {
           "Stopping task {} for cluster link {}",
           t->name(),
           _config.name);
-        auto res = co_await stop_task(t.get());
+        auto res_f = co_await ss::coroutine::as_future(stop_task(t.get()));
+        if (res_f.failed()) {
+            vlog(
+              cllog.warn,
+              "Failed to stop task {}: {}",
+              t->name(),
+              res_f.get_exception());
+            continue;
+        }
+        auto res = res_f.get();
         if (!res) {
             if (res.assume_error().code() == errc::task_not_running) {
                 // that's ok, keep going
