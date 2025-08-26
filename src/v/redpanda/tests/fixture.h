@@ -124,7 +124,8 @@ public:
       bool enable_data_transforms = false,
       bool enable_legacy_upload_mode = true,
       bool iceberg_enabled = false,
-      bool development_enable_cloud_topics = false)
+      bool development_enable_cloud_topics = false,
+      bool development_cluster_linking_enabled = false)
       : app(ssx::sformat("redpanda-{}", node_id()))
       , proxy_port(proxy_port)
       , schema_reg_port(schema_reg_port)
@@ -145,7 +146,8 @@ public:
           enable_data_transforms,
           enable_legacy_upload_mode,
           iceberg_enabled,
-          development_enable_cloud_topics);
+          development_enable_cloud_topics,
+          development_cluster_linking_enabled);
         app.initialize(
           proxy_config(proxy_port),
           proxy_client_config(kafka_port),
@@ -387,7 +389,8 @@ public:
       bool data_transforms_enabled = false,
       bool legacy_upload_mode_enabled = true,
       bool iceberg_enabled = false,
-      bool development_enable_cloud_topics = false) {
+      bool development_enable_cloud_topics = false,
+      bool development_cluster_linking_enabled = false) {
         auto base_path = std::filesystem::path(data_dir);
         ss::smp::invoke_on_all([=]() {
             auto& config = config::shard_local_cfg();
@@ -493,6 +496,8 @@ public:
 
                 config.get("development_enable_cloud_topics").set_value(true);
             }
+            config.get("development_enable_cluster_link")
+              .set_value(development_cluster_linking_enabled);
         }).get();
     }
 

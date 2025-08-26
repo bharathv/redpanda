@@ -184,6 +184,24 @@ void consumer_fixture::wait_for_visible_leadership_shuffle(
       << "never detected leadership change, test precondition failed";
 }
 
+application* consumer_fixture::create_node_application(model::node_id node_id) {
+    return cluster_test_fixture::create_node_application(
+      node_id,
+      9092,
+      11000,
+      8082,
+      8081,
+      configure_node_id::yes,
+      empty_seed_starts_cluster::yes,
+      std::nullopt,
+      std::nullopt,
+      std::nullopt,
+      true,
+      false,
+      false,
+      /* cluster_linking_enabled */ true);
+}
+
 std::unique_ptr<kafka::client::direct_consumer>
 basic_consumer_fixture::make_consumer() {
     return std::make_unique<kafka::client::direct_consumer>(

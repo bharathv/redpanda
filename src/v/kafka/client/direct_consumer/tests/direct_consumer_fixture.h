@@ -51,6 +51,8 @@ public:
     // test
     void wait_for_visible_leadership_shuffle(const model::ntp& ntp);
 
+    application* create_node_application(model::node_id node_id);
+
 protected:
     redpanda_thread_fixture* rp;
     std::unique_ptr<kafka::client::cluster> cluster;
