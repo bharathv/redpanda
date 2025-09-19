@@ -15,7 +15,6 @@
 #include "cluster/commands.h"
 #include "cluster/controller_stm.h"
 #include "cluster/fwd.h"
-#include "cluster_link/model/types.h"
 #include "features/feature_table.h"
 #include "features/fwd.h"
 #include "model/timeout_clock.h"
@@ -23,6 +22,8 @@
 #include "rpc/fwd.h"
 
 #include <seastar/core/sharded.hh>
+
+#include <expected>
 
 namespace cluster::cluster_link {
 class frontend : public ss::peering_sharded_service<frontend> {
@@ -38,6 +39,8 @@ public:
     frontend(
       model::node_id,
       cluster::partition_leaders_table*,
+      cluster::partition_manager*,
+      cluster::topic_table*,
       table*,
       cluster::controller_stm*,
       rpc::connection_cache*,
@@ -68,9 +71,34 @@ public:
       ::cluster_link::model::update_cluster_link_configuration_cmd,
       model::timeout_clock::time_point);
 
+    /**
+     * @brief Reports the status of a shard-local topic in the given link
+     */
+    ss::future<::cluster_link::rpc::shadow_topic_report_response>
+    shard_local_topic_report(
+      const ::cluster_link::model::id_t&, const model::topic&);
+    /**
+     * @brief Reports the status of a node-local topic in the given link
+     * This is the aggregate of reports from all shards.
+     */
     ss::future<::cluster_link::rpc::shadow_topic_report_response>
       node_local_shadow_topic_report(
         ::cluster_link::rpc::shadow_topic_report_request);
+    /**
+     * @brief Reports the status of a shadow topic in the given link
+     * on the input node_id.
+     */
+    ss::future<::cluster_link::rpc::shadow_topic_report_response>
+      shadow_topic_report(
+        model::node_id, ::cluster_link::rpc::shadow_topic_report_request);
+    /**
+     * @brief Shadow topic report aggregated from all the brokers hosting
+     * partition replicas of the topic.
+     */
+    using report_result_t = std::
+      expected<::cluster_link::model::aggregated_shadow_topic_report, errc>;
+    ss::future<report_result_t> shadow_topic_report(
+      const ::cluster_link::model::id_t&, const model::topic&);
 
     bool cluster_link_active() const;
 
@@ -144,6 +172,8 @@ public:
 private:
     model::node_id _self;
     cluster::partition_leaders_table* _leaders;
+    cluster::partition_manager* _partition_manager;
+    cluster::topic_table* _topic_table;
     rpc::connection_cache* _connections;
     table* _table;
     ss::abort_source* _as;

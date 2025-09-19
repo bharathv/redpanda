@@ -884,6 +884,26 @@ struct cluster_link_task_status_report
 
     auto serde_fields() { return std::tie(link_reports); }
 };
+
+struct aggregated_shadow_topic_report {
+    struct partition_report {
+        ::model::partition_id partition;
+    };
+    struct broker_report {
+        ::model::node_id broker;
+        ::model::revision_id link_update_revision;
+        chunked_vector<partition_report> leaders;
+    };
+
+    chunked_vector<broker_report> brokers;
+    int32_t total_partitions{0};
+
+    friend bool operator==(
+      const aggregated_shadow_topic_report&,
+      const aggregated_shadow_topic_report&)
+      = default;
+};
+
 } // namespace cluster_link::model
 
 namespace cluster_link::rpc {

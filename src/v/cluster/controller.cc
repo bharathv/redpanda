@@ -490,6 +490,8 @@ ss::future<> controller::start(
     co_await _cluster_link_frontend.start(
       _raft0->self().id(),
       ss::sharded_parameter([this] { return &_partition_leaders.local(); }),
+      ss::sharded_parameter([this] { return &_partition_manager.local(); }),
+      ss::sharded_parameter([this] { return &_tp_state.local(); }),
       ss::sharded_parameter([this] { return &_cluster_link_table.local(); }),
       ss::sharded_parameter([this] {
           return _stm.local_is_initialized() ? &_stm.local() : nullptr;

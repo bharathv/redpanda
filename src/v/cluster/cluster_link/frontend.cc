@@ -15,6 +15,7 @@
 #include "cluster/errc.h"
 #include "cluster/logger.h"
 #include "cluster/partition_leaders_table.h"
+#include "cluster/partition_manager.h"
 #include "cluster/types.h"
 #include "cluster_link/model/types.h"
 #include "cluster_link/shadow_linking_rpc_service.h"
@@ -72,11 +73,57 @@ errc map_errc(std::error_code ec) {
     }
     return errc::rpc_error;
 }
+
+/**
+ * @brief Reduces the results of shard reports into a single response
+ */
+struct shard_report_reducer {
+    using result_t = ::cluster_link::rpc::shadow_topic_report_response;
+    void operator()(result_t shard_result) {
+        if (!result) {
+            result = std::move(shard_result);
+            return;
+        }
+        if (result->err_code != ::cluster_link::errc::success) {
+            // once we have an error, we just keep it
+            return;
+        }
+        if (shard_result.err_code != ::cluster_link::errc::success) {
+            result->err_code = shard_result.err_code;
+            // no need to populate further results
+            return;
+        }
+        // capture the minimum revision seen across the shards. Usually all
+        // shards should have the same revision, so this is a conservative
+        // check.
+        result->link_update_revision = std::min(
+          result->link_update_revision, shard_result.link_update_revision);
+        for (auto& leader : shard_result.leaders) {
+            result->leaders.push_back(std::move(leader));
+        }
+        return;
+    }
+
+    std::optional<result_t> get() && {
+        if (!result) {
+            return std::nullopt;
+        }
+        if (result->err_code != ::cluster_link::errc::success) {
+            result->leaders.clear();
+            result->link_update_revision = {};
+        }
+        return std::move(result);
+    }
+    std::optional<result_t> result;
+};
+
 } // namespace
 
 frontend::frontend(
   model::node_id self,
   cluster::partition_leaders_table* leaders,
+  cluster::partition_manager* partition_manager,
+  cluster::topic_table* topic_table,
   table* table,
   cluster::controller_stm* controller,
   rpc::connection_cache* connections,
@@ -84,6 +131,8 @@ frontend::frontend(
   ss::abort_source* as)
   : _self(self)
   , _leaders(leaders)
+  , _partition_manager(partition_manager)
+  , _topic_table(topic_table)
   , _connections(connections)
   , _table(table)
   , _as(as)
@@ -258,9 +307,36 @@ ss::future<errc> frontend::do_mutation(
 
 ss::future<::cluster_link::rpc::shadow_topic_report_response>
 frontend::node_local_shadow_topic_report(
-  ::cluster_link::rpc::shadow_topic_report_request) {
-    // to be filled in the next commits
-    co_return ::cluster_link::rpc::shadow_topic_report_response{};
+  ::cluster_link::rpc::shadow_topic_report_request request) {
+    auto reducer = shard_report_reducer{};
+    const auto& link_id = request.link_id;
+    const auto& topic = request.topic_name;
+    co_await container().map_reduce(
+      reducer,
+      [](
+        frontend& f,
+        const ::cluster_link::model::id_t& link_id,
+        const model::topic& topic) {
+          return f.shard_local_topic_report(link_id, topic);
+      },
+      link_id,
+      topic);
+    auto result = std::move(reducer).get();
+    if (result) {
+        result->node_id = _self;
+        co_return std::move(*result);
+    }
+    vlog(
+      cluster::clusterlog.error,
+      "No result from shard report reducer for topic: {}, this should never "
+      "happen, returning {}",
+      topic,
+      ::cluster_link::errc::link_id_not_found);
+    // This is effectively unreachable because the reducer always produces a
+    // result aggregated from all shards. Here we return a blanket
+    // link_id_not_found
+    co_return ::cluster_link::rpc::shadow_topic_report_response{
+      .err_code = ::cluster_link::errc::link_id_not_found};
 }
 
 ss::future<errc> frontend::dispatch_mutation_to_remote(
@@ -918,5 +994,145 @@ errc frontend::validator::validate_metadata_mirroring_config(
     }
 
     return errc::success;
+}
+
+ss::future<::cluster_link::rpc::shadow_topic_report_response>
+frontend::shard_local_topic_report(
+  const ::cluster_link::model::id_t& link_id, const model::topic& topic) {
+    auto md = _table->find_id_by_topic(topic);
+    if (!md.has_value() || md.value() != link_id) {
+        co_return ::cluster_link::rpc::shadow_topic_report_response{
+          .err_code = ::cluster_link::errc::link_id_not_found};
+    }
+    auto maybe_rev = _table->get_link_last_update_revision(link_id);
+    if (!maybe_rev.has_value()) {
+        vlog(
+          cluster::clusterlog.warn,
+          "Inconsistent state detected, topic {} is mapped to link id {}, but "
+          "the link revision does not exist",
+          topic,
+          link_id);
+        co_return ::cluster_link::rpc::shadow_topic_report_response{
+          .err_code = ::cluster_link::errc::link_id_not_found};
+    }
+    ::cluster_link::rpc::shadow_topic_report_response result;
+    result.err_code = ::cluster_link::errc::success;
+    result.link_update_revision = maybe_rev.value();
+    auto local_partitions = _partition_manager->get_topic_partition_table(
+      {model::kafka_namespace, topic});
+    for (const auto& [ntp, partition] : local_partitions) {
+        if (!partition->is_leader()) {
+            continue;
+        }
+        result.leaders.push_back(
+          ::cluster_link::rpc::shadow_topic_partition_leader_report{
+            .partition = ntp.tp.partition});
+    }
+    co_return result;
+}
+
+ss::future<::cluster_link::rpc::shadow_topic_report_response>
+frontend::shadow_topic_report(
+  model::node_id node_id,
+  ::cluster_link::rpc::shadow_topic_report_request request) {
+    using resp_t = ::cluster_link::rpc::shadow_topic_report_response;
+    if (node_id == _self) {
+        co_return co_await node_local_shadow_topic_report(std::move(request));
+    }
+    static constexpr auto rpc_timeout = 5s;
+    co_return co_await _connections
+      ->with_node_client<
+        ::cluster_link::rpc::shadow_linking_rpc_client_protocol>(
+        _self,
+        ss::this_shard_id(),
+        node_id,
+        model::timeout_clock::now() + rpc_timeout,
+        [request = std::move(request)](
+          ::cluster_link::rpc::shadow_linking_rpc_client_protocol
+            client) mutable {
+            return client
+              .shadow_topic_report(
+                std::move(request), rpc::client_opts(rpc_timeout))
+              .then(&rpc::get_ctx_data<resp_t>);
+        })
+      .then(
+        [](result<::cluster_link::rpc::shadow_topic_report_response> result) {
+            if (result.has_error()) {
+                vlog(
+                  cluster::clusterlog.warn,
+                  "Error getting shadow topic report from remote node: {}",
+                  result.error());
+                return ss::make_ready_future<resp_t>(
+                  resp_t{.err_code = ::cluster_link::errc::rpc_error});
+            }
+            return ss::make_ready_future<resp_t>(std::move(result.value()));
+        });
+}
+
+ss::future<frontend::report_result_t> frontend::shadow_topic_report(
+  const ::cluster_link::model::id_t& link_id, const model::topic& topic) {
+    // farms out requests to all nodes with replicas of the topic
+    // and then aggregates the results
+    // generate a list of brokers with replicas of the topic
+    absl::flat_hash_set<model::node_id> topic_nodes;
+    const auto& topics = _topic_table->topics_map();
+    auto it = topics.find(
+      ::model::topic_namespace{model::kafka_namespace, topic});
+    if (it == topics.end()) {
+        co_return std::unexpected<errc>(errc::does_not_exist);
+    }
+    // no scheduling points while looping through partitions
+    const auto& tp_md = it->second;
+    auto num_partitions = tp_md.get_partition_count();
+    const auto& assignments = tp_md.get_assignments();
+    for (const auto& [_, p_assignment] : assignments) {
+        for (const auto& r : p_assignment.replicas) {
+            topic_nodes.insert(r.node_id);
+        }
+    }
+    if (topic_nodes.empty()) {
+        co_return std::unexpected<errc>(errc::does_not_exist);
+    }
+    ::cluster_link::model::aggregated_shadow_topic_report result;
+    result.total_partitions = num_partitions;
+    result.brokers.reserve(topic_nodes.size());
+    try {
+        co_await ss::max_concurrent_for_each(
+          topic_nodes,
+          32,
+          [this, &link_id, &topic, &result](model::node_id node_id) {
+              ::cluster_link::rpc::shadow_topic_report_request request;
+              request.link_id = link_id;
+              request.topic_name = topic;
+              return shadow_topic_report(node_id, std::move(request))
+                .then([node_id, &result](
+                        ::cluster_link::rpc::shadow_topic_report_response r) {
+                    if (r.err_code != ::cluster_link::errc::success) {
+                        vlog(
+                          cluster::clusterlog.warn,
+                          "Error getting shadow topic report from node {}: {}",
+                          node_id,
+                          r.err_code);
+                    }
+                    ::cluster_link::model::aggregated_shadow_topic_report::
+                      broker_report broker_report;
+                    broker_report.broker = node_id;
+                    broker_report.link_update_revision = r.link_update_revision;
+                    for (auto& leader : r.leaders) {
+                        broker_report.leaders.push_back(
+                          {.partition = leader.partition});
+                    }
+                    result.brokers.push_back(std::move(broker_report));
+                    return ss::now();
+                });
+          });
+    } catch (...) {
+        vlog(
+          cluster::clusterlog.warn,
+          "Exception during shadow topic reporting {}",
+          std::current_exception());
+        co_return std::unexpected<errc>(errc::rpc_error);
+    }
+    co_return result;
 }
 } // namespace cluster::cluster_link
