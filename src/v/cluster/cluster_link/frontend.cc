@@ -71,6 +71,7 @@ errc map_errc(std::error_code ec) {
     }
     return errc::rpc_error;
 }
+
 } // namespace
 
 frontend::frontend(

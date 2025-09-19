@@ -15,7 +15,6 @@
 #include "cluster/commands.h"
 #include "cluster/controller_stm.h"
 #include "cluster/fwd.h"
-#include "cluster_link/model/types.h"
 #include "features/feature_table.h"
 #include "features/fwd.h"
 #include "model/timeout_clock.h"
@@ -23,6 +22,8 @@
 #include "rpc/fwd.h"
 
 #include <seastar/core/sharded.hh>
+
+#include <expected>
 
 namespace cluster::cluster_link {
 class frontend : public ss::peering_sharded_service<frontend> {
@@ -67,6 +68,20 @@ public:
       ::cluster_link::model::id_t,
       ::cluster_link::model::update_cluster_link_configuration_cmd,
       model::timeout_clock::time_point);
+
+    /**
+     * @brief Reports the status of a shard-local topic in the given link
+     */
+    ss::future<::cluster_link::rpc::shadow_topic_report_response>
+    shard_local_topic_report(
+      const ::cluster_link::model::id_t&, const model::topic&);
+    /**
+     * @brief Reports the status of a node-local topic in the given link
+     * This is the aggregate of reports from all shards.
+     */
+    ss::future<::cluster_link::rpc::shadow_topic_report_response>
+      node_local_shadow_topic_report(
+        ::cluster_link::rpc::shadow_topic_report_request);
 
     bool cluster_link_active() const;
 

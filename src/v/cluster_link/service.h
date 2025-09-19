@@ -20,6 +20,7 @@
 #include "cluster_link/model/types.h"
 #include "kafka/server/fwd.h"
 #include "model/fundamental.h"
+#include "rpc/fwd.h"
 
 #include <seastar/core/gate.hh>
 #include <seastar/core/sharded.hh>
@@ -29,7 +30,7 @@ namespace cluster_link {
 /**
  * @brief API access for cluster link service
  */
-class service {
+class service : public ss::peering_sharded_service<service> {
 public:
     service(
       ::model::node_id self,
@@ -39,6 +40,7 @@ public:
       ss::sharded<cluster::partition_leaders_table>* partition_leaders_table,
       ss::sharded<cluster::shard_table>* shard_table,
       ss::sharded<cluster::metadata_cache>* metadata_cache,
+      ss::sharded<::rpc::connection_cache>* connections,
       cluster::controller* controller,
       ss::sharded<kafka::group_router>* group_router,
       ss::sharded<cluster::health_monitor_frontend>* hm_frontend,
@@ -93,11 +95,38 @@ public:
      */
     ss::future<cl_result<void>> delete_cluster_link(const model::name_t& name);
 
+    /**
+     * @brief Reports the status of a shard-local topic in the given link
+     */
+    ss::future<rpc::shadow_topic_report_response>
+    shard_local_topic_report(const model::id_t&, const ::model::topic&);
+
+    /**
+     * @brief Reports the status of a node-local topic in the given link
+     * This is the aggregate of reports from all shards.
+     */
+    ss::future<rpc::shadow_topic_report_response>
+      node_local_shadow_topic_report(rpc::shadow_topic_report_request);
+
+    /**
+     * @brief Shadow topic report aggregated from all the brokers hosting
+     * partition replicas of the topic.
+     */
+    ss::future<model::report_result_t>
+    shadow_topic_report(model::id_t, const ::model::topic&);
+
 private:
     void register_notifications();
     void unregister_notifications();
 
 private:
+    /**
+     * @brief Reports the status of a shadow topic in the given link
+     * on the input node_id.
+     */
+    ss::future<rpc::shadow_topic_report_response>
+      shadow_topic_report(::model::node_id, rpc::shadow_topic_report_request);
+
     ss::gate _gate;
     // Need explicit namespace due to having a `cluster_link::model` namespace
     ::model::node_id _self;
@@ -107,6 +136,7 @@ private:
     ss::sharded<cluster::partition_leaders_table>* _partition_leaders_table;
     ss::sharded<cluster::shard_table>* _shard_table;
     ss::sharded<cluster::metadata_cache>* _metadata_cache;
+    ss::sharded<::rpc::connection_cache>* _connections;
     cluster::controller* _controller;
     ss::sharded<kafka::group_router>* _group_router;
     ss::sharded<cluster::health_monitor_frontend>* _hm_frontend;

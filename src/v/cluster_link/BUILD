@@ -197,6 +197,7 @@ redpanda_cc_library(
     deps = [
         ":errc",
         ":fwd",
+        ":shadow_link_rpc_gen",
         "//src/v/base",
         "//src/v/cluster",
         "//src/v/cluster/utils:partition_change_notifier_api",
@@ -206,6 +207,7 @@ redpanda_cc_library(
         "//src/v/kafka/server",
         "//src/v/model",
         "//src/v/raft",
+        "//src/v/rpc",
         "@seastar",
     ],
 )

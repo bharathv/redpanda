@@ -158,6 +158,8 @@ public:
         return _scheduling_group;
     }
 
+    std::unique_ptr<link_registry>& registry() noexcept { return _registry; }
+
 private:
     /// Called periodically to reconcile registered tasks on created links
     ss::future<> link_task_reconciler();

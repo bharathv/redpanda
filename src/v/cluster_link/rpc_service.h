@@ -31,6 +31,6 @@ public:
       shadow_topic_report_request request, ::rpc::streaming_context&) override;
 
 private:
-    [[maybe_unused]] ss::sharded<cluster_link::service>& _svc;
+    ss::sharded<cluster_link::service>& _svc;
 };
 } // namespace cluster_link::rpc

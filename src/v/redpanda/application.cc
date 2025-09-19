@@ -1534,6 +1534,7 @@ void application::wire_up_runtime_services(
       &controller->get_partition_leaders(),
       &controller->get_shard_table(),
       &metadata_cache,
+      &_connection_cache,
       controller.get(),
       &group_router,
       &controller->get_health_monitor(),

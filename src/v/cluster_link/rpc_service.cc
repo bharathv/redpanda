@@ -11,14 +11,13 @@
 
 #include "cluster_link/rpc_service.h"
 
-#include "cluster/cluster_link/frontend.h"
 #include "cluster_link/service.h"
 
 namespace cluster_link::rpc {
 
 ss::future<shadow_topic_report_response> service_impl::shadow_topic_report(
-  shadow_topic_report_request, ::rpc::streaming_context&) {
-    co_return shadow_topic_report_response{};
+  shadow_topic_report_request request, ::rpc::streaming_context&) {
+    return _svc.local().node_local_shadow_topic_report(std::move(request));
 }
 
 }; // namespace cluster_link::rpc
