@@ -161,9 +161,14 @@ public:
           id, std::move(cmd), timeout);
     }
 
+    ss::future<model::report_result_t> shadow_topic_report(
+      const model::id_t& id, const ::model::topic& topic) override {
+        return _svc->shadow_topic_report(id, topic);
+    }
+
 private:
     frontend* _plf;
-    [[maybe_unused]] service* _svc;
+    service* _svc;
 };
 
 class default_link_factory : public link_factory {

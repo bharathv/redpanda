@@ -23,6 +23,7 @@
 #include "utils/notification_list.h"
 
 namespace cluster_link {
+
 /**
  * @brief The link class represents a link between two clusters
  */

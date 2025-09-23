@@ -137,7 +137,7 @@ ss::future<> manager::start() {
 ss::future<> manager::stop() {
     vlog(cllog.info, "Stopping cluster link manager");
 
-    co_await stop_topic_reconciler();
+    co_await on_controller_stepdown();
 
     co_await _queue.shutdown();
     _link_task_reconciler_timer.cancel();
@@ -339,6 +339,11 @@ manager::handle_on_link_change(model::id_t id, ::model::revision_id revision) {
       "Handling cluster link change for id={}, revision={}",
       id,
       revision);
+    auto notify_reconciler = ss::defer([this] {
+        if (_link_status_reconciler) {
+            _link_status_reconciler->reconcile();
+        }
+    });
     auto link_opt = _registry->find_link_by_id(id);
     if (!link_opt) {
         vlog(cllog.debug, "Detected cluster link id={} has been removed", id);
@@ -535,15 +540,13 @@ ss::future<> manager::handle_on_leadership_change(
 
     if (ntp == ::model::controller_ntp) {
         if (is_ntp_leader == ntp_leader::yes && !_is_controller_leader) {
+            vassert(term.has_value(), "term must be set when becoming leader");
             _is_controller_leader = ntp_leader::yes;
-            vlog(cllog.debug, "Starting topic reconciler on controller leader");
-            co_await start_topic_reconciler();
+            co_await on_controller_leadership(term.value());
         }
         if (is_ntp_leader == ntp_leader::no && _is_controller_leader) {
             _is_controller_leader = ntp_leader::no;
-            vlog(
-              cllog.debug, "Stopping topic reconciler on controller follower");
-            co_await stop_topic_reconciler();
+            co_await on_controller_stepdown();
         }
     }
 
@@ -599,7 +602,7 @@ model::cluster_link_task_status_report manager::get_task_status_report() const {
     return report;
 }
 
-ss::future<> manager::start_topic_reconciler() {
+ss::future<> manager::on_controller_leadership(::model::term_id term) {
     if (!_is_controller_leader) {
         co_return;
     }
@@ -619,11 +622,24 @@ ss::future<> manager::start_topic_reconciler() {
     } catch (const std::exception& e) {
         vlog(cllog.error, "Failed to start topic reconciler: {}", e);
         // If it fails to start, enqueue a retry to start the reconciler
-        _queue.submit_delayed(10s, [this] { return start_topic_reconciler(); });
+        _queue.submit_delayed(
+          10s, [this, term] { return on_controller_leadership(term); });
+    }
+    if (!_link_status_reconciler) {
+        _link_status_reconciler = std::make_unique<link_status_reconciler>(
+          _registry.get(), term);
+        try {
+            co_await _link_status_reconciler->start();
+        } catch (const std::exception& e) {
+            vlog(cllog.error, "Failed to start link status reconciler: {}", e);
+            // If it fails to start, enqueue a retry to start the reconciler
+            _queue.submit_delayed(
+              10s, [this, term] { return on_controller_leadership(term); });
+        }
     }
 }
 
-ss::future<> manager::stop_topic_reconciler() {
+ss::future<> manager::on_controller_stepdown() {
     if (_topic_reconciler) {
         vlog(cllog.trace, "Stopping topic reconciler");
         try {
@@ -634,7 +650,20 @@ ss::future<> manager::stop_topic_reconciler() {
             vlog(cllog.error, "Failed to stop topic reconciler: {}", e);
             // If it fails to start, enqueue a retry to start the reconciler
             _queue.submit_delayed(
-              10s, [this] { return stop_topic_reconciler(); });
+              10s, [this] { return on_controller_stepdown(); });
+        }
+    }
+    if (_link_status_reconciler) {
+        vlog(cllog.trace, "Stopping link status reconciler");
+        try {
+            co_await _link_status_reconciler->stop();
+            _link_status_reconciler.reset();
+            vlog(cllog.debug, "Link status reconciler has stopped");
+        } catch (const std::exception& e) {
+            vlog(cllog.error, "Failed to stop link status reconciler: {}", e);
+            // If it fails to start, enqueue a retry to start the reconciler
+            _queue.submit_delayed(
+              10s, [this] { return on_controller_stepdown(); });
         }
     }
 }

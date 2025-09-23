@@ -14,6 +14,7 @@
 #include "absl/container/flat_hash_map.h"
 #include "cluster_link/deps.h"
 #include "cluster_link/link.h"
+#include "cluster_link/link_status_reconciler.h"
 #include "cluster_link/logger.h"
 #include "cluster_link/model/types.h"
 #include "cluster_link/task.h"
@@ -163,8 +164,8 @@ public:
 private:
     /// Called periodically to reconcile registered tasks on created links
     ss::future<> link_task_reconciler();
-    ss::future<> start_topic_reconciler();
-    ss::future<> stop_topic_reconciler();
+    ss::future<> on_controller_leadership(::model::term_id);
+    ss::future<> on_controller_stepdown();
 
 private:
     ::model::node_id _self;
@@ -179,6 +180,7 @@ private:
     std::unique_ptr<link_factory> _link_factory;
     std::unique_ptr<cluster_factory> _cluster_factory;
     std::unique_ptr<topic_reconciler> _topic_reconciler;
+    std::unique_ptr<link_status_reconciler> _link_status_reconciler;
     std::unique_ptr<consumer_groups_router> _group_router;
     std::unique_ptr<partition_metadata_provider> _partition_metadata_provider;
     ssx::work_queue _queue;

@@ -49,9 +49,7 @@ T handle_error(cluster_link::cl_result<T> result) {
     case cluster_link::errc::link_has_active_shadow_topics:
         throw serde::pb::rpc::failed_precondition_exception(info.message());
     case cluster_link::errc::link_id_not_found:
-        throw serde::pb::rpc::not_found_exception(info.message());
     case cluster_link::errc::invalid_configuration:
-        throw serde::pb::rpc::invalid_argument_exception(info.message());
     case cluster_link::errc::topic_already_mirrored:
     case cluster_link::errc::topic_mirrored_by_other_link:
     case cluster_link::errc::topic_not_being_mirrored:
