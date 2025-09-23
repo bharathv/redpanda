@@ -27,6 +27,43 @@
 #include "kafka/server/group_router.h"
 
 #include <seastar/coroutine/switch_to.hh>
+namespace {
+cluster_link::errc map_to_errc(::cluster::cluster_link::errc ec) {
+    switch (ec) {
+    case cluster::cluster_link::errc::success:
+        return cluster_link::errc::success;
+    case cluster::cluster_link::errc::does_not_exist:
+        return cluster_link::errc::does_not_exist;
+    case cluster::cluster_link::errc::limit_exceeded:
+    case cluster::cluster_link::errc::invalid_create:
+    case cluster::cluster_link::errc::invalid_update:
+    case cluster::cluster_link::errc::feature_disabled:
+    case cluster::cluster_link::errc::topic_already_being_mirrored:
+    case cluster::cluster_link::errc::topic_being_mirrored_by_other_link:
+    case cluster::cluster_link::errc::topic_not_being_mirrored:
+        return cluster_link::errc::invalid_mutation;
+    case cluster::cluster_link::errc::service_error:
+    case cluster::cluster_link::errc::timeout:
+    case cluster::cluster_link::errc::not_leader_controller:
+    case cluster::cluster_link::errc::replication_error:
+    case cluster::cluster_link::errc::throttling_quota_exceeded:
+        return cluster_link::errc::runtime_error;
+    case cluster::cluster_link::errc::rpc_error:
+        return cluster_link::errc::rpc_error;
+    case cluster::cluster_link::errc::mirror_topic_name_invalid:
+    case cluster::cluster_link::errc::uuid_conflict:
+    case cluster::cluster_link::errc::bootstrap_servers_empty:
+    case cluster::cluster_link::errc::tls_configuration_invalid:
+    case cluster::cluster_link::errc::link_name_invalid:
+    case cluster::cluster_link::errc::topic_filter_invalid:
+    case cluster::cluster_link::errc::topic_property_excluded_from_mirroring:
+    case cluster::cluster_link::errc::scram_configuration_invalid:
+        return cluster_link::errc::invalid_configuration;
+    case cluster::cluster_link::errc::link_has_active_shadow_topics:
+        return cluster_link::errc::link_has_active_shadow_topics;
+    }
+}
+} // namespace
 
 namespace cluster_link {
 
@@ -112,6 +149,21 @@ public:
       ::model::timeout_clock::time_point timeout) override {
         return _plf->update_cluster_link_configuration(
           id, std::move(cmd), timeout);
+    }
+
+    ss::future<std::expected<
+      ::cluster_link::model::aggregated_shadow_topic_report,
+      errc>>
+    shadow_topic_report(
+      const model::id_t& id, const ::model::topic& topic) override {
+        auto result = co_await _plf->shadow_topic_report(id, topic);
+        if (result.has_value()) {
+            co_return std::expected<
+              ::cluster_link::model::aggregated_shadow_topic_report,
+              errc>{std::move(result.value())};
+        }
+        // todo: add an error mapper to convert between various errc types.
+        co_return std::unexpected(map_to_errc(result.error()));
     }
 
 private:

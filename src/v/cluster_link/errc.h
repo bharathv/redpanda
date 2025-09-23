@@ -38,6 +38,9 @@ enum class errc : int {
     link_limit_reached,
     link_creation_failed,
     link_has_active_shadow_topics,
+    does_not_exist,
+    invalid_mutation,
+    runtime_error,
 };
 
 std::error_code make_error_code(errc) noexcept;

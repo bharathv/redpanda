@@ -56,6 +56,7 @@ redpanda_cc_library(
     srcs = [
         "deps.cc",
         "link.cc",
+        "link_status_reconciler.cc",
         "manager.cc",
         "task.cc",
         "topic_reconciler.cc",
@@ -63,6 +64,7 @@ redpanda_cc_library(
     hdrs = [
         "deps.h",
         "link.h",
+        "link_status_reconciler.h",
         "manager.h",
         "task.h",
         "topic_reconciler.h",

@@ -18,6 +18,8 @@
 #include "kafka/data/rpc/deps.h"
 #include "model/fundamental.h"
 
+#include <expected>
+
 namespace cluster_link {
 
 /**
@@ -82,6 +84,11 @@ public:
         model::update_cluster_link_configuration_cmd,
         ::model::timeout_clock::time_point)
       = 0;
+
+    virtual ss::future<std::expected<
+      ::cluster_link::model::aggregated_shadow_topic_report,
+      errc>>
+    shadow_topic_report(const model::id_t&, const ::model::topic&) = 0;
 };
 
 /**

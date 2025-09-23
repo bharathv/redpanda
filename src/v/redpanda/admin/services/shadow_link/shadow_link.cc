@@ -47,8 +47,10 @@ T handle_error(cluster_link::cl_result<T> result) {
     case cluster_link::errc::link_has_active_shadow_topics:
         throw serde::pb::rpc::failed_precondition_exception(info.message());
     case cluster_link::errc::link_id_not_found:
+    case cluster_link::errc::does_not_exist:
         throw serde::pb::rpc::not_found_exception(info.message());
     case cluster_link::errc::invalid_configuration:
+    case cluster_link::errc::invalid_mutation:
         throw serde::pb::rpc::invalid_argument_exception(info.message());
     case cluster_link::errc::topic_already_mirrored:
     case cluster_link::errc::topic_mirrored_by_other_link:
@@ -56,6 +58,8 @@ T handle_error(cluster_link::cl_result<T> result) {
         throw serde::pb::rpc::already_exists_exception(info.message());
     case cluster_link::errc::link_limit_reached:
         throw serde::pb::rpc::resource_exhausted_exception(info.message());
+    case cluster_link::errc::runtime_error:
+        throw serde::pb::rpc::internal_exception(info.message());
     }
 }
 

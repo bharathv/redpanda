@@ -192,6 +192,14 @@ public:
         co_return ec.value();
     }
 
+    ss::future<std::expected<
+      ::cluster_link::model::aggregated_shadow_topic_report,
+      errc>>
+    shadow_topic_report(const model::id_t&, const ::model::topic&) override {
+        // unused in unit tests.
+        co_return std::unexpected(errc::link_id_not_found);
+    }
+
 private:
     cluster::cluster_link::table* _table;
     ::model::offset _last_offset{0};
