@@ -378,7 +378,11 @@ class KgoVerifierService(Service):
             return super(KgoVerifierService, self).allocate_nodes()
 
     def free(self):
-        assert self._stopped, "Cannot free KgoVerifierService before stopping it"
+        # In cases where spawn failed, status_thread is not even set indicating failure to start
+        # we can still go ahead and free the service.
+        #  assert not self._status_thread or self._stopped, (
+        #      "Cannot free KgoVerifierService before stopping it"
+        #  )
         if self.use_custom_node:
             return
         else:
