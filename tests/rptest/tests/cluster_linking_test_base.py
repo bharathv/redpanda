@@ -486,6 +486,16 @@ class ShadowLinkTestBase(PreallocNodesTest):
         req = self.delete_link_request(link_name=link_name, *args, **kwargs)
         return self.delete_link_with_request(req=req)
 
+    def failover_link(self, name: str) -> shadow_link_pb2.ShadowLink:
+        req = shadow_link_pb2.FailOverRequest(name=name)
+        return self.service_client.fail_over(req=req).shadow_link
+
+    def failover_link_topic(
+        self, link_name: str, topic: str
+    ) -> shadow_link_pb2.ShadowLink:
+        req = shadow_link_pb2.FailOverRequest(name=link_name, shadow_topic_name=topic)
+        return self.service_client.fail_over(req=req).shadow_link
+
     def delete_link_with_request(
         self, req: shadow_link_pb2.DeleteShadowLinkRequest
     ) -> shadow_link_pb2.DeleteShadowLinkResponse:
