@@ -166,6 +166,11 @@ public:
         return _svc->shadow_topic_report(id, topic);
     }
 
+    ss::future<::cluster::cluster_link::errc> failover_link_topics(
+      model::id_t id, ::model::timeout_clock::time_point timeout) override {
+        return _plf->failover_link_topics(id, timeout);
+    }
+
 private:
     frontend* _plf;
     service* _svc;
@@ -382,6 +387,19 @@ cl_result<chunked_vector<model::metadata>> service::list_cluster_links() {
 ss::future<cl_result<model::metadata>> service::update_cluster_link(
   model::name_t name, model::update_cluster_link_configuration_cmd cmd) {
     return _manager->update_cluster_link(std::move(name), std::move(cmd));
+}
+
+ss::future<cl_result<model::metadata>> service::update_mirror_topic_status(
+  model::name_t link_name,
+  const ::model::topic& topic,
+  model::mirror_topic_status status) {
+    return _manager->update_mirror_topic_status(
+      std::move(link_name), topic, status);
+}
+
+ss::future<cl_result<model::metadata>>
+service::failover_link_topics(model::name_t link_name) {
+    return _manager->failover_link_topics(std::move(link_name));
 }
 
 ss::future<cl_result<void>>

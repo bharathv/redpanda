@@ -69,19 +69,8 @@ public:
       ::cluster_link::model::update_cluster_link_configuration_cmd,
       model::timeout_clock::time_point);
 
-    /**
-     * @brief Reports the status of a shard-local topic in the given link
-     */
-    ss::future<::cluster_link::rpc::shadow_topic_report_response>
-    shard_local_topic_report(
-      const ::cluster_link::model::id_t&, const model::topic&);
-    /**
-     * @brief Reports the status of a node-local topic in the given link
-     * This is the aggregate of reports from all shards.
-     */
-    ss::future<::cluster_link::rpc::shadow_topic_report_response>
-      node_local_shadow_topic_report(
-        ::cluster_link::rpc::shadow_topic_report_request);
+    ss::future<errc> failover_link_topics(
+      ::cluster_link::model::id_t, model::timeout_clock::time_point);
 
     bool cluster_link_active() const;
 

@@ -912,4 +912,71 @@ errc frontend::validator::validate_metadata_mirroring_config(
 
     return errc::success;
 }
+
+ss::future<errc> frontend::failover_link_topics(
+  ::cluster_link::model::id_t id, model::timeout_clock::time_point timeout) {
+    auto meta = _table->find_link_by_id(id);
+    if (!meta.has_value()) {
+        co_return errc::does_not_exist;
+    }
+    const auto& md = meta->get();
+    if (md.state.status != ::cluster_link::model::link_status::active) {
+        vlog(
+          cluster::clusterlog.warn,
+          "Attempting to failover topics of link {} which is not in the active "
+          "state (current state: {})",
+          md.name,
+          md.state.status);
+        co_return errc::invalid_update;
+    }
+
+    const auto& topics = md.state.mirror_topics;
+    chunked_vector<model::topic> topics_to_failover;
+    auto should_failover = [](::cluster_link::model::mirror_topic_status s) {
+        switch (s) {
+        case ::cluster_link::model::mirror_topic_status::active:
+            return true;
+        case ::cluster_link::model::mirror_topic_status::paused:
+        case ::cluster_link::model::mirror_topic_status::failed:
+        case ::cluster_link::model::mirror_topic_status::promoted:
+        case ::cluster_link::model::mirror_topic_status::failed_over:
+        case ::cluster_link::model::mirror_topic_status::failing_over:
+        case ::cluster_link::model::mirror_topic_status::promoting:
+            return false;
+        }
+    };
+    for (const auto& [t, info] : topics) {
+        if (should_failover(info.status)) {
+            topics_to_failover.push_back(t);
+        }
+    }
+    chunked_vector<errc> errors;
+    errors.reserve(topics_to_failover.size());
+    co_await ss::max_concurrent_for_each(
+      topics_to_failover,
+      32,
+      [this, &errors, id, timeout](const model::topic& t) {
+          return update_mirror_topic_status(
+                   id,
+                   {.topic = t,
+                    .status
+                    = ::cluster_link::model::mirror_topic_status::failing_over},
+                   timeout)
+            .then([&errors](errc err_code) {
+                if (err_code != errc::success) {
+                    errors.push_back(err_code);
+                }
+            });
+      });
+
+    if (!errors.empty()) {
+        vlog(
+          cluster::clusterlog.warn,
+          "Encountered {} errors while failing over topics of link id {}",
+          errors.size(),
+          id);
+        co_return map_errc(errors.front());
+    }
+    co_return errc::success;
+}
 } // namespace cluster::cluster_link

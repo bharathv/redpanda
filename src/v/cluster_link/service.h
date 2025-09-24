@@ -87,6 +87,25 @@ public:
      */
     ss::future<cl_result<model::metadata>> update_cluster_link(
       model::name_t name, model::update_cluster_link_configuration_cmd cmd);
+
+    /**
+     * @brief Update the status of a mirror topic
+     *
+     * @return Result containing metadata of updated mirror topic or an error.
+     */
+    ss::future<cl_result<model::metadata>> update_mirror_topic_status(
+      model::name_t link_name,
+      const ::model::topic&,
+      model::mirror_topic_status);
+
+    /**
+     * @brief Failover the topics of a cluster link
+     *
+     * @return Result containing metadata of failed over topics or an error.
+     */
+    ss::future<cl_result<model::metadata>>
+    failover_link_topics(model::name_t link_name);
+
     /**
      * @brief Delete the cluster link object
      *
