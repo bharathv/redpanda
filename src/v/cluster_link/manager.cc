@@ -265,6 +265,83 @@ ss::future<cl_result<model::metadata>> manager::update_cluster_link(
     co_return metadata_resp->get().copy();
 }
 
+ss::future<cl_result<model::metadata>> manager::update_mirror_topic_status(
+  model::name_t link_name,
+  const ::model::topic& topic,
+  model::mirror_topic_status status) {
+    static constexpr auto model_timeout = 30s;
+    auto hold = _g.hold();
+    vlog(
+      cllog.info,
+      "Attempting to update mirror topic '{}' status on link '{}' to status: "
+      "{}",
+      topic,
+      link_name,
+      status);
+    const auto link_id = _registry->find_link_id_by_name(link_name);
+    if (!link_id.has_value()) {
+        co_return err_info{
+          errc::link_id_not_found,
+          ssx::sformat("Unable to find link by name '{}'", link_name)};
+    }
+    model::update_mirror_topic_status_cmd cmd;
+    cmd.topic = topic;
+    cmd.status = status;
+    auto ec = co_await _registry->update_mirror_topic_state(
+      *link_id, std::move(cmd), ::model::timeout_clock::now() + model_timeout);
+    auto err = map_cluster_errc(ec);
+    if (err != errc::success) {
+        co_return err_info(
+          err,
+          fmt::format(
+            "Failed to update mirror topic '{}' status on link '{}': {}",
+            topic,
+            *link_id,
+            ec));
+    }
+    auto metadata_resp = _registry->find_link_by_id(*link_id);
+    if (!metadata_resp) {
+        co_return err_info(
+          errc::link_id_not_found,
+          fmt::format("Failed to find cluster link with id '{}'", *link_id));
+    }
+    co_return metadata_resp->get().copy();
+}
+
+ss::future<cl_result<model::metadata>>
+manager::failover_link_topics(model::name_t link_name) {
+    static constexpr auto model_timeout = 30s;
+    auto hold = _g.hold();
+    vlog(
+      cllog.info,
+      "Attempting to failover all mirror topics on link '{}'",
+      link_name);
+    const auto link_id = _registry->find_link_id_by_name(link_name);
+    if (!link_id.has_value()) {
+        co_return err_info{
+          errc::link_id_not_found,
+          ssx::sformat("Unable to find link by name '{}'", link_name)};
+    }
+    auto ec = co_await _registry->failover_link_topics(
+      *link_id, ::model::timeout_clock::now() + model_timeout);
+    auto err = map_cluster_errc(ec);
+    if (err != errc::success) {
+        co_return err_info(
+          err,
+          fmt::format(
+            "Failed to failover all mirror topics on link '{}': {}",
+            *link_id,
+            ec));
+    }
+    auto metadata_resp = _registry->find_link_by_id(*link_id);
+    if (!metadata_resp) {
+        co_return err_info(
+          errc::link_id_not_found,
+          fmt::format("Failed to find cluster link with id '{}'", *link_id));
+    }
+    co_return metadata_resp->get().copy();
+}
+
 ss::future<cl_result<void>> manager::delete_cluster_link(model::name_t name) {
     vlog(cllog.info, "Attempting to delete cluster link named '{}'", name);
     auto cl_resp = get_cluster_link(name);

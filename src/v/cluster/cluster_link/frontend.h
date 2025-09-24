@@ -100,6 +100,9 @@ public:
     ss::future<report_result_t> shadow_topic_report(
       const ::cluster_link::model::id_t&, const model::topic&);
 
+    ss::future<errc> failover_link_topics(
+      ::cluster_link::model::id_t, model::timeout_clock::time_point);
+
     bool cluster_link_active() const;
 
     bool cluster_linking_enabled() const;
