@@ -310,6 +310,10 @@ ss::future<> service::stop() {
     }
 }
 
+ss::sharded<::cluster::cluster_link::frontend>& service::frontend_svc() {
+    return *_plf;
+}
+
 ss::future<cl_result<model::metadata>>
 service::upsert_cluster_link(model::metadata md) {
     return _manager->upsert_cluster_link(std::move(md));

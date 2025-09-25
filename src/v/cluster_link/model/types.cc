@@ -251,6 +251,28 @@ auto format_as(acl_operation o) { return to_string_view(o); }
 auto format_as(acl_permission_type p) { return to_string_view(p); }
 } // namespace cluster_link::model
 
+namespace cluster_link::rpc {
+
+fmt::iterator shadow_topic_report_request::format_to(fmt::iterator it) const {
+    return fmt::format_to(it, "{{ link: {}, topic: {} }}", link_id, topic_name);
+}
+
+fmt::iterator
+shadow_topic_partition_leader_report::format_to(fmt::iterator it) const {
+    return fmt::format_to(it, "{{ partition: {} }}", partition);
+}
+
+fmt::iterator shadow_topic_report_response::format_to(fmt::iterator it) const {
+    return fmt::format_to(
+      it,
+      "{{ link_update_revision: {}, leaders: [{}], err_code: {} }}",
+      link_update_revision,
+      fmt::join(leaders.begin(), leaders.end(), ","),
+      err_code);
+}
+
+} // namespace cluster_link::rpc
+
 auto fmt::formatter<cluster_link::model::task_state>::format(
   cluster_link::model::task_state st, format_context& ctx) const
   -> decltype(ctx.out()) {

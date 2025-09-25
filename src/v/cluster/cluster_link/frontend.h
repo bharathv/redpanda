@@ -68,6 +68,10 @@ public:
       ::cluster_link::model::update_cluster_link_configuration_cmd,
       model::timeout_clock::time_point);
 
+    ss::future<::cluster_link::rpc::shadow_topic_report_response>
+      node_local_shadow_topic_report(
+        ::cluster_link::rpc::shadow_topic_report_request);
+
     bool cluster_link_active() const;
 
     bool cluster_linking_enabled() const;

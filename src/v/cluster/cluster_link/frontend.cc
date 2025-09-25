@@ -17,6 +17,7 @@
 #include "cluster/partition_leaders_table.h"
 #include "cluster/types.h"
 #include "cluster_link/model/types.h"
+#include "cluster_link/shadow_linking_rpc_service.h"
 #include "config/configuration.h"
 #include "model/validation.h"
 #include "rpc/connection_cache.h"
@@ -253,6 +254,13 @@ ss::future<errc> frontend::do_mutation(
       [cmd = std::move(cmd), timeout](auto& service) mutable {
           return service.do_local_mutation(std::move(cmd), timeout);
       });
+}
+
+ss::future<::cluster_link::rpc::shadow_topic_report_response>
+frontend::node_local_shadow_topic_report(
+  ::cluster_link::rpc::shadow_topic_report_request) {
+    // to be filled in the next commits
+    co_return ::cluster_link::rpc::shadow_topic_report_response{};
 }
 
 ss::future<errc> frontend::dispatch_mutation_to_remote(

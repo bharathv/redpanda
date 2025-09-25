@@ -93,6 +93,8 @@ public:
      */
     ss::future<cl_result<void>> delete_cluster_link(const model::name_t& name);
 
+    ss::sharded<::cluster::cluster_link::frontend>& frontend_svc();
+
 private:
     void register_notifications();
     void unregister_notifications();

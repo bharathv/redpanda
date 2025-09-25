@@ -12,11 +12,15 @@
 #pragma once
 
 #include "absl/container/flat_hash_set.h"
+#include "cluster_link/errc.h"
 #include "container/chunked_hash_map.h"
 #include "model/fundamental.h"
 #include "model/metadata.h"
-#include "serde/envelope.h"
+#include "serde/rw/enum.h"
+#include "serde/rw/envelope.h"
+#include "serde/rw/named_type.h"
 #include "serde/rw/variant.h"
+#include "serde/rw/vector.h"
 #include "utils/absl_sstring_hash.h"
 #include "utils/named_type.h"
 #include "utils/unresolved_address.h"
@@ -881,6 +885,73 @@ struct cluster_link_task_status_report
     auto serde_fields() { return std::tie(link_reports); }
 };
 } // namespace cluster_link::model
+
+namespace cluster_link::rpc {
+// report request to a single broker
+struct shadow_topic_report_request
+  : serde::envelope<
+      shadow_topic_report_request,
+      serde::version<0>,
+      serde::compat_version<0>> {
+    cluster_link::model::id_t link_id;
+    ::model::topic topic_name;
+
+    friend bool operator==(
+      const shadow_topic_report_request&, const shadow_topic_report_request&)
+      = default;
+
+    fmt::iterator format_to(fmt::iterator) const;
+
+    auto serde_fields() { return std::tie(link_id, topic_name); }
+};
+
+struct shadow_topic_partition_leader_report
+  : serde::envelope<
+      shadow_topic_partition_leader_report,
+      serde::version<0>,
+      serde::compat_version<0>> {
+    ::model::partition_id partition;
+    // todo: add offset information for promotion
+    // todo: add hwm information for fail over state
+    // checkpointing
+
+    friend bool operator==(
+      const shadow_topic_partition_leader_report&,
+      const shadow_topic_partition_leader_report&)
+      = default;
+
+    fmt::iterator format_to(fmt::iterator) const;
+
+    auto serde_fields() { return std::tie(partition); }
+};
+
+// aggregated report from a single broker about a shadow topic
+// the report is aggregated across all partition leaders and shards
+// on the broker.
+struct shadow_topic_report_response
+  : serde::envelope<
+      shadow_topic_report_response,
+      serde::version<0>,
+      serde::compat_version<0>> {
+    ::model::node_id node_id;
+    // The smallest revision seen by the link across all shards.
+    ::model::revision_id link_update_revision;
+    // Report for each partition that is a leader on this broker.
+    chunked_vector<shadow_topic_partition_leader_report> leaders;
+    errc err_code;
+
+    friend bool operator==(
+      const shadow_topic_report_response&, const shadow_topic_report_response&)
+      = default;
+
+    fmt::iterator format_to(fmt::iterator) const;
+
+    auto serde_fields() {
+        return std::tie(node_id, link_update_revision, leaders, err_code);
+    }
+};
+
+} // namespace cluster_link::rpc
 
 template<>
 struct fmt::formatter<cluster_link::model::mirror_topic_status>

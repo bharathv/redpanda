@@ -684,6 +684,7 @@ redpanda_cc_library(
         "//src/v/cloud_topics:state_accessors",
         "//src/v/cloud_topics/level_zero/stm:ctp_stm",
         "//src/v/cloud_topics/level_zero/stm:ctp_stm_api",
+        "//src/v/cluster_link:shadow_link_rpc_gen",
         "//src/v/cluster_link/model",
         "//src/v/config",
         "//src/v/container:chunked_hash_map",

@@ -1,4 +1,11 @@
 load("//bazel:build.bzl", "redpanda_cc_library")
+load("//src/v/rpc:compiler.bzl", "redpanda_cc_rpc_library")
+
+redpanda_cc_rpc_library(
+    name = "shadow_link_rpc_gen",
+    src = "shadow_linking_rpc.json",
+    visibility = ["//visibility:public"],
+)
 
 redpanda_cc_library(
     name = "logger",
@@ -199,6 +206,23 @@ redpanda_cc_library(
         "//src/v/kafka/server",
         "//src/v/model",
         "//src/v/raft",
+        "@seastar",
+    ],
+)
+
+redpanda_cc_library(
+    name = "rpc_service",
+    srcs = [
+        "rpc_service.cc",
+    ],
+    hdrs = [
+        "rpc_service.h",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":cluster_link",
+        ":shadow_link_rpc_gen",
+        "//src/v/cluster",
         "@seastar",
     ],
 )
