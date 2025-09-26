@@ -17,6 +17,7 @@
 #include "container/chunked_hash_map.h"
 #include "model/fundamental.h"
 #include "model/metadata.h"
+#include "model/timestamp.h"
 #include "serde/rw/enum.h"
 #include "serde/rw/envelope.h"
 #include "serde/rw/named_type.h"
@@ -286,6 +287,8 @@ struct connection_config
     operator<<(std::ostream& os, const connection_config& cfg);
 };
 
+static constexpr ::model::timestamp earliest_offset_ts{-2};
+static constexpr ::model::timestamp latest_offset_ts{-1};
 struct mirror_topic_metadata
   : serde::envelope<
       mirror_topic_metadata,
@@ -308,6 +311,13 @@ struct mirror_topic_metadata
     std::optional<int16_t> replication_factor;
     /// The configuration for the topic
     chunked_hash_map<ss::sstring, ss::sstring> topic_configs;
+    /// Timestamp of the starting offset for the topic. The timestamp is
+    /// resolved to an offset at the time of replication.
+    std::optional<::model::timestamp> start_offset_ts;
+
+    ::model::timestamp get_starting_offset_ts() const {
+        return start_offset_ts.value_or(earliest_offset_ts);
+    }
 
     friend bool
     operator==(const mirror_topic_metadata&, const mirror_topic_metadata&)
@@ -321,7 +331,8 @@ struct mirror_topic_metadata
           destination_topic_id,
           partition_count,
           replication_factor,
-          topic_configs);
+          topic_configs,
+          start_offset_ts);
     }
 
     mirror_topic_metadata copy() const;
@@ -405,9 +416,16 @@ struct topic_metadata_mirroring_config
       = absl::flat_hash_set<ss::sstring, sstring_hash, sstring_eq>;
     /// List of topic properties to mirror
     properties_set topic_properties_to_mirror;
+    /// Starting offset for all mirror topics.  Follows ListOffsets spec where
+    /// earliest is -2 and latest is -1.  Defaults to earliest_offset
+    std::optional<::model::timestamp> starting_offset;
 
     ss::lowres_clock::duration get_task_interval() const {
         return task_interval.value_or(task_interval_default);
+    }
+
+    ::model::timestamp get_starting_offset() {
+        return starting_offset.value_or(earliest_offset_ts);
     }
 
     friend bool operator==(
@@ -420,7 +438,8 @@ struct topic_metadata_mirroring_config
           is_enabled,
           task_interval,
           topic_name_filters,
-          topic_properties_to_mirror);
+          topic_properties_to_mirror,
+          starting_offset);
     }
 
     topic_metadata_mirroring_config copy() const;
