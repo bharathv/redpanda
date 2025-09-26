@@ -74,6 +74,8 @@ public:
     ss::future<std::expected<partition_data_queue::fetch_data, errc>>
     fetch(const ::model::topic_partition&, ss::abort_source&);
 
+    kafka::client::cluster& cluster() { return _consumer->get_cluster(); }
+
 private:
     bool should_throttle_produce();
     bool can_ignore_partition_data(const ::model::topic_partition&);
