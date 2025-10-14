@@ -424,7 +424,7 @@ struct topic_metadata_mirroring_config
         return task_interval.value_or(task_interval_default);
     }
 
-    ::model::timestamp get_starting_offset() {
+    ::model::timestamp get_start_offset_ts() const {
         return starting_offset.value_or(earliest_offset_ts);
     }
 
