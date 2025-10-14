@@ -16,6 +16,13 @@
 
 namespace cluster_link::replication {
 
+class link_configuration_provider {
+public:
+    virtual ~link_configuration_provider() = default;
+    virtual ss::future<kafka::offset>
+    start_offset(const ::model::ntp&, ss::abort_source&) = 0;
+};
+
 /**
  * Link replication manager is responsible for managing the lifecycle of
  * partition replicators for a given cluster link. One instance per cluster link
@@ -25,6 +32,7 @@ class link_replication_manager {
 public:
     explicit link_replication_manager(
       ss::scheduling_group,
+      std::unique_ptr<link_configuration_provider> config_provider,
       std::unique_ptr<data_source_factory> source_factory,
       std::unique_ptr<data_sink_factory> sink_factory);
 
@@ -46,12 +54,14 @@ private:
     ss::future<>
       do_stop_replicator(::model::ntp, std::optional<::model::term_id>);
     ss::scheduling_group _sg;
+    std::unique_ptr<link_configuration_provider> _config_provider;
     std::unique_ptr<data_source_factory> _source_factory;
     std::unique_ptr<data_sink_factory> _sink_factory;
     ssx::work_queue _queue;
     chunked_hash_map<::model::ntp, std::unique_ptr<partition_replicator>>
       _replicators;
     ss::gate _gate;
+    ss::abort_source _as;
 };
 
 } // namespace cluster_link::replication

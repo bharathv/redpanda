@@ -84,6 +84,7 @@ redpanda_test_cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//src/v/cluster_link/replication:deps",
+        "//src/v/cluster_link/replication:link_replication_mgr",
         "//src/v/model/tests:random",
         "//src/v/random:generators",
         "@seastar",

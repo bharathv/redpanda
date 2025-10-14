@@ -20,9 +20,11 @@ namespace cluster_link::replication {
 
 link_replication_manager::link_replication_manager(
   ss::scheduling_group sg,
+  std::unique_ptr<link_configuration_provider> config_provider,
   std::unique_ptr<data_source_factory> source_factory,
   std::unique_ptr<data_sink_factory> sink_factory)
   : _sg(sg)
+  , _config_provider(std::move(config_provider))
   , _source_factory(std::move(source_factory))
   , _sink_factory(std::move(sink_factory))
   , _queue(_sg, [](const std::exception_ptr& ex) {
@@ -36,6 +38,7 @@ ss::future<> link_replication_manager::start() {
 ss::future<> link_replication_manager::stop() {
     vlog(cllog.trace, "Stopping link replication manager");
     // to avoid further submissions to the queue.
+    _as.request_abort();
     auto f = _gate.close();
     co_await _queue.shutdown();
     co_await std::move(f);
@@ -58,10 +61,17 @@ ss::future<> link_replication_manager::do_start_replicator(
       "Replicator for {} already exists, an instance should be stopped before "
       "starting a new one",
       ntp);
+    auto configured_start_offset = co_await _config_provider->start_offset(
+      ntp, _as);
     auto source = _source_factory->make_source(ntp);
     auto sink = _sink_factory->make_sink(ntp);
     auto replicator = std::make_unique<partition_replicator>(
-      ntp, term, std::move(source), std::move(sink), _sg);
+      ntp,
+      term,
+      configured_start_offset,
+      std::move(source),
+      std::move(sink),
+      _sg);
     auto [r_it, _] = _replicators.emplace(ntp, std::move(replicator));
     co_await r_it->second->start();
 }

@@ -149,7 +149,11 @@ public:
         _source = source.get();
         _sink = sink.get();
         _replicator = std::make_unique<partition_replicator>(
-          _ntp, model::term_id(0), std::move(source), std::move(sink));
+          _ntp,
+          model::term_id(0),
+          kafka::offset{0},
+          std::move(source),
+          std::move(sink));
         return _replicator->start();
     }
 

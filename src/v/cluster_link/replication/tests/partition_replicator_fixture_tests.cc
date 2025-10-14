@@ -46,7 +46,11 @@ public:
           _source.tp, *_mux_consumer);
         auto sink = std::make_unique<local_partition_sink>(partition);
         _replicator = std::make_unique<partition_replicator>(
-          _source, model::term_id{0}, std::move(source), std::move(sink));
+          _source,
+          model::term_id{0},
+          kafka::offset{0},
+          std::move(source),
+          std::move(sink));
         _replicator->start().get();
     }
 

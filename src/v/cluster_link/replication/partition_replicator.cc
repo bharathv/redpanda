@@ -25,10 +25,12 @@ static constexpr std::chrono::seconds max_backoff{10};
 partition_replicator::partition_replicator(
   const model::ntp& ntp,
   model::term_id term,
+  kafka::offset configured_start_offset,
   std::unique_ptr<data_source> source,
   std::unique_ptr<data_sink> sink,
   ss::scheduling_group scheduling_group)
   : _term(term)
+  , _configured_start_offset(configured_start_offset)
   , _log(cllog, fmt::format("[{}-term-{}] replicator", ntp, term))
   , _source(std::move(source))
   , _sink(std::move(sink))
@@ -41,8 +43,12 @@ ss::future<> partition_replicator::start() {
     co_await ss::coroutine::switch_to(_scheduling_group);
     vlog(_log.trace, "Starting replicator");
     co_await _sink->start();
-    co_await _source->start(
-      kafka::next_offset(_sink->last_replicated_offset()));
+    // If the sink has already moved ahead of the configured start offset,
+    // we should begin replication from there. If not, we start from the
+    // configured start offset.
+    auto start_offset = std::max(
+      _configured_start_offset, _sink->last_replicated_offset());
+    co_await _source->start(start_offset);
     ssx::repeat_until_gate_closed(_gate, [this] {
         return fetch_and_replicate().handle_exception(
           [this](const std::exception_ptr& e) {

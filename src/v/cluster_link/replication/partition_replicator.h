@@ -57,6 +57,7 @@ public:
     explicit partition_replicator(
       const ::model::ntp& ntp,
       ::model::term_id,
+      kafka::offset configured_start_offset,
       std::unique_ptr<data_source> source,
       std::unique_ptr<data_sink> sink,
       ss::scheduling_group sg = ss::default_scheduling_group());
@@ -84,6 +85,7 @@ private:
       ::model::offset begin,
       ::model::offset end) noexcept;
     ::model::term_id _term;
+    kafka::offset _configured_start_offset;
     prefix_logger _log;
     ss::gate _gate;
     ss::abort_source _as;

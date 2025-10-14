@@ -85,6 +85,7 @@ using kafka::data::rpc::topic_creator;
 using kafka::data::rpc::topic_metadata_cache;
 using data_src_factory = replication::remote_data_source_factory;
 using data_sink_factory = replication::local_partition_data_sink_factory;
+using config_provider = replication::link_configuration_provider;
 
 class link_registry_adapter : public link_registry {
 public:
@@ -180,6 +181,15 @@ private:
     service* _svc;
 };
 
+class default_link_config_provider
+  : public replication::link_configuration_provider {
+public:
+    ss::future<kafka::offset>
+    start_offset(const ::model::ntp&, ss::abort_source&) override {
+        co_return kafka::offset(0);
+    }
+};
+
 class default_link_factory : public link_factory {
 public:
     explicit default_link_factory(
@@ -204,6 +214,7 @@ public:
           link_reconciler_period,
           std::move(config),
           std::move(cluster_connection),
+          std::make_unique<default_link_config_provider>(),
           std::make_unique<data_src_factory>(make_remote_consumer(
             std::move(client_id),
             *cluster_connection,
