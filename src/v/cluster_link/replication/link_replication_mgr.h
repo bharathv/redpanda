@@ -62,21 +62,45 @@ private:
       do_stop_replicator(::model::ntp, std::optional<::model::term_id>);
     bool has_pending_actions();
     ss::future<> reconcile();
+    ss::future<> reconcile_ntp_once(::model::ntp ntp, ssx::semaphore_units);
 
-    void run_start_actions();
-    void run_stop_actions();
+    enum class op_type : uint8_t { start, stop };
+    friend std::ostream& operator<<(std::ostream& os, op_type);
+    struct ntp_target_state {
+        op_type op;
+        std::optional<::model::term_id> term;
+        fmt::iterator format_to(fmt::iterator) const;
+        void merge(const ::model::ntp&, ntp_target_state new_desired);
+    };
 
-private:
+    struct ntp_reconciliation_state {
+        std::optional<ntp_target_state> in_progress;
+        std::optional<ntp_target_state> desired;
+
+        void
+        set_desired(const ::model::ntp& ntp, ntp_target_state new_desired) {
+            if (desired) {
+                desired->merge(ntp, new_desired);
+                return;
+            }
+            desired = new_desired;
+        }
+
+        bool needs_reconciliation() const { return desired && !in_progress; }
+        bool reconciliation_complete() const {
+            return !desired && !in_progress;
+        }
+    };
+
+    chunked_hash_map<::model::ntp, ntp_reconciliation_state> _pending;
+    ss::condition_variable _pending_cv;
+    ssx::semaphore _max_reconciliations{32, "link-replicator-mgr"};
+
     ss::scheduling_group _sg;
     std::unique_ptr<link_configuration_provider> _config_provider;
     std::unique_ptr<data_source_factory> _source_factory;
     std::unique_ptr<data_sink_factory> _sink_factory;
     ss::future<> maybe_sync_start_offsets();
-    ssx::work_queue _queue;
-    chunked_hash_map<::model::ntp, ::model::term_id> _pending_starts;
-    chunked_hash_map<::model::ntp, std::optional<::model::term_id>>
-      _pending_stops;
-    ss::condition_variable _pending_changes_cv;
     chunked_hash_map<::model::ntp, std::unique_ptr<partition_replicator>>
       _replicators;
     std::optional<replication_probe::configuration> _cfg_probe;
