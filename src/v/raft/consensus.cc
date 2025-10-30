@@ -2469,7 +2469,7 @@ consensus::read_snapshot_metadata() {
     co_return metadata;
 }
 
-void consensus::update_offsets_from_snapshot(
+bool consensus::update_offsets_from_snapshot(
   const raft::snapshot_metadata& metadata) {
     vassert(
       metadata.last_included_index >= _last_snapshot_index,
@@ -2493,6 +2493,7 @@ void consensus::update_offsets_from_snapshot(
         _replication_monitor.notify_committed();
         _event_manager.notify_commit_index();
     }
+    return prev_commit_index != _commit_index;
 }
 
 ss::future<install_snapshot_reply>
