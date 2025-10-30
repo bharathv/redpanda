@@ -622,7 +622,7 @@ private:
      * and returns true if the committed index was updated to the snapshot
      * index.
      */
-    bool update_offsets_from_snapshot(const snapshot_metadata&);
+    [[nodiscard]] bool update_offsets_from_snapshot(const snapshot_metadata&);
     ss::future<std::optional<snapshot_metadata>> read_snapshot_metadata();
 
     /**

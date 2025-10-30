@@ -1492,8 +1492,9 @@ consensus::do_start(std::optional<xshard_transfer_state> xst_state) {
         std::optional<storage::truncate_prefix_config> start_truncate_cfg;
         auto snapshot_units = co_await _snapshot_lock.get_units();
         auto metadata = co_await read_snapshot_metadata();
+        bool commit_idx_updated = false;
         if (metadata.has_value()) {
-            update_offsets_from_snapshot(metadata.value());
+            commit_idx_updated = update_offsets_from_snapshot(metadata.value());
             co_await _configuration_manager.add(
               _last_snapshot_index, std::move(metadata->latest_configuration));
             _probe->configuration_update();
@@ -1509,6 +1510,11 @@ consensus::do_start(std::optional<xshard_transfer_state> xst_state) {
         }
         co_await _log->start(start_truncate_cfg, _as);
         snapshot_units.return_all();
+        if (commit_idx_updated) {
+            _commit_index_updated.broadcast();
+            _replication_monitor.notify_committed();
+            _event_manager.notify_commit_index();
+        }
 
         vlog(
           _ctxlog.debug,
@@ -2393,7 +2399,7 @@ ss::future<> consensus::hydrate_snapshot() {
     if (!metadata.has_value()) {
         co_return;
     }
-    update_offsets_from_snapshot(metadata.value());
+    auto commit_idx_updated = update_offsets_from_snapshot(metadata.value());
     co_await _configuration_manager.add(
       _last_snapshot_index, std::move(metadata->latest_configuration));
     _probe->configuration_update();
@@ -2402,6 +2408,11 @@ ss::future<> consensus::hydrate_snapshot() {
         co_await truncate_to_latest_snapshot(truncate_cfg.value());
     }
     _snapshot_size = co_await _snapshot_mgr.get_snapshot_size();
+    if (commit_idx_updated) {
+        _commit_index_updated.broadcast();
+        _replication_monitor.notify_committed();
+        _event_manager.notify_commit_index();
+    }
     update_follower_states(_configuration_manager.get_latest());
 }
 
@@ -2488,11 +2499,6 @@ bool consensus::update_offsets_from_snapshot(
     auto prev_commit_index = _commit_index;
     _commit_index = std::max(_last_snapshot_index, _commit_index);
     maybe_update_last_visible_index(_commit_index);
-    if (prev_commit_index != _commit_index) {
-        _commit_index_updated.broadcast();
-        _replication_monitor.notify_committed();
-        _event_manager.notify_commit_index();
-    }
     return prev_commit_index != _commit_index;
 }
 
