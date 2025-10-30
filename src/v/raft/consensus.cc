@@ -1493,7 +1493,7 @@ consensus::do_start(std::optional<xshard_transfer_state> xst_state) {
         auto snapshot_units = co_await _snapshot_lock.get_units();
         auto metadata = co_await read_snapshot_metadata();
         if (metadata.has_value()) {
-            update_offset_from_snapshot(metadata.value());
+            update_offsets_from_snapshot(metadata.value());
             co_await _configuration_manager.add(
               _last_snapshot_index, std::move(metadata->latest_configuration));
             _probe->configuration_update();
@@ -2393,7 +2393,7 @@ ss::future<> consensus::hydrate_snapshot() {
     if (!metadata.has_value()) {
         co_return;
     }
-    update_offset_from_snapshot(metadata.value());
+    update_offsets_from_snapshot(metadata.value());
     co_await _configuration_manager.add(
       _last_snapshot_index, std::move(metadata->latest_configuration));
     _probe->configuration_update();
@@ -2469,7 +2469,7 @@ consensus::read_snapshot_metadata() {
     co_return metadata;
 }
 
-void consensus::update_offset_from_snapshot(
+void consensus::update_offsets_from_snapshot(
   const raft::snapshot_metadata& metadata) {
     vassert(
       metadata.last_included_index >= _last_snapshot_index,
