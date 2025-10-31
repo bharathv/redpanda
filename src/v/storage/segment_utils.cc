@@ -1401,12 +1401,31 @@ bool is_past_transaction_batch_delete_horizon(
                   seg->index().self_compact_timestamp().value()))
                > cfg.tx_retention_ms.value();
     }
+    vlog(
+      gclog.trace,
+      "Segment {} is not past transaction batch delete horizon: "
+      "has_self_compact_timestamp={}, tx_retention_ms={}, stable_offset={}, "
+      "max_tombstone_remove_offset={}",
+      seg->reader().path(),
+      seg->has_self_compact_timestamp(),
+      cfg.tx_retention_ms.has_value()
+        ? std::to_string(cfg.tx_retention_ms.value().count())
+        : "nullopt",
+      seg->offsets().get_stable_offset(),
+      cfg.max_tombstone_remove_offset);
 
     return false;
 }
 
 bool has_removable_transaction_batches(
   ss::lw_shared_ptr<segment> seg, const compaction::compaction_config& cfg) {
+    vlog(
+      gclog.trace,
+      "Checking segment {} for removable transaction batches: "
+      "may_have_tx_batches={}, past_horizon={}",
+      seg->reader().path(),
+      seg->index().may_have_transaction_batches(),
+      is_past_transaction_batch_delete_horizon(seg, cfg));
     return seg->index().may_have_transaction_batches()
            && is_past_transaction_batch_delete_horizon(seg, cfg);
 }

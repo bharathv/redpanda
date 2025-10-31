@@ -431,6 +431,18 @@ log_manager::housekeeping_scan(model::timestamp collection_threshold) {
           = current_log.handle->stm_manager()->max_removable_local_log_offset();
         model::offset max_tombstone_remove_offset
           = current_log.handle->stm_manager()->max_tombstone_remove_offset();
+        model::offset min_snapshotted_offset
+          = current_log.handle->stm_manager()->min_snapshotted_offset();
+        // todo: add a comment for why we clamp to the min snapshotted offset.
+        vlog(
+          gclog.debug,
+          "{}: Compaction max tombstone remove offset before clamping: {}, min "
+          "snapshotted offset: {}",
+          ntp,
+          max_tombstone_remove_offset,
+          min_snapshotted_offset);
+        max_tombstone_remove_offset = std::min(
+          max_tombstone_remove_offset, min_snapshotted_offset);
         if (
           max_unpinned_offset
           && *max_unpinned_offset < max_compactible_offset) {

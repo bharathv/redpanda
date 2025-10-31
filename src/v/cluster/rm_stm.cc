@@ -1698,6 +1698,9 @@ void rm_stm::apply_fence(model::producer_identity pid, model::record_batch b) {
         maybe_rearm_autoabort_timer(
           clock_type::now() + batch_data.transaction_timeout_ms.value());
     }
+    if (producer->_active_transaction_hook.is_linked()) {
+        _active_tx_producers.erase(_active_tx_producers.iterator_to(*producer));
+    }
     _active_tx_producers.push_back(*producer);
     _producer_state_manager.local().touch(*producer, _vcluster_id);
 }

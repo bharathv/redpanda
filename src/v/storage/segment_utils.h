@@ -339,6 +339,11 @@ inline bool can_discard(
 
     // Deal with transactional control batch removal
     if (b.header().attrs.is_control() && past_tx_delete_horizon) {
+        vlog(
+          gclog.trace,
+          "Removing control batch {} from {} past tx delete horizon",
+          b.header(),
+          ntp);
         return true;
     }
 
