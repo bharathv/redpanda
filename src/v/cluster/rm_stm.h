@@ -428,6 +428,11 @@ private:
       &tx::producer_state::_active_transaction_hook>;
     active_transactional_producers_t _active_tx_producers;
 
+    using inflight_begin_producers_t = intrusive_list<
+      tx::producer_state,
+      &tx::producer_state::_in_flight_begin_hook>;
+    inflight_begin_producers_t _inflight_begin_producers;
+
     metrics::internal_metric_groups _metrics;
     ss::abort_source _as;
     ss::gate _gate;
