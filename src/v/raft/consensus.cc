@@ -2002,7 +2002,11 @@ consensus::do_append_entries(append_entries_request&& r) {
         co_return reply;
     }
     // no need to trigger timeout
-    vlog(_ctxlog.trace, "Received append entries request: {}", r);
+    vlog(
+      _ctxlog.trace,
+      "Received append entries request: {} lstats: {}",
+      r,
+      lstats);
 
     // raft.pdf: Reply false if term < currentTerm (§5.1)
     if (request_metadata.term < _term) {
@@ -2266,6 +2270,7 @@ consensus::do_append_entries(append_entries_request&& r) {
             co_return reply;
         }
 
+        vlog(_ctxlog.warn, "Recursive append entries: {}", r);
         co_return co_await do_append_entries(std::move(r));
     }
 
