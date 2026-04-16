@@ -214,6 +214,7 @@ transport::make_response_handler(netbuf& b, rpc::client_opts& opts) {
               from_now(timing.written_at),
               timing.flushed);
             _probe->request_timeout();
+
             _correlations.erase(it);
         }
     });

@@ -98,6 +98,25 @@ redpanda_proto_library(
 )
 
 proto_library(
+    name = "diagnostics_proto",
+    srcs = ["diagnostics.proto"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//proto/redpanda/core/pbgen:options_proto",
+        "//proto/redpanda/core/pbgen:rpc_proto",
+    ],
+)
+
+redpanda_proto_library(
+    name = "diagnostics_redpanda_proto",
+    protos = [
+        ":diagnostics_proto",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [],
+)
+
+proto_library(
     name = "security_proto",
     srcs = ["security.proto"],
     visibility = ["//visibility:public"],

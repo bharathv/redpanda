@@ -134,6 +134,7 @@ redpanda_cc_library(
         "//src/v/container:chunked_circular_buffer",
         "//src/v/container:chunked_vector",
         "//src/v/container:intrusive",
+        "//src/v/diagnostics:event_buffer",
         "//src/v/features",
         "//src/v/hashing:crc32c",
         "//src/v/metrics",

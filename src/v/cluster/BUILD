@@ -721,6 +721,7 @@ redpanda_cc_library(
         "//src/v/container:contiguous_range_map",
         "//src/v/container:intrusive",
         "//src/v/crash_tracker",
+        "//src/v/diagnostics:event_buffer",
         "//src/v/features",
         "//src/v/features:enterprise_features",
         "//src/v/finjector",

@@ -1,0 +1,350 @@
+// Copyright 2025 Redpanda Data, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+
+package redpanda.core.admin.v2;
+
+import "proto/redpanda/core/pbgen/options.proto";
+import "proto/redpanda/core/pbgen/rpc.proto";
+
+option (pbgen.cpp_namespace) = "proto::admin";
+
+// DiagnosticsService provides access to per-broker diagnostic event logs and
+// curated cluster diagnostics. Events are emitted best-effort by subsystems
+// into a per-shard ring buffer.
+service DiagnosticsService {
+    // GetEventLog
+    //
+    // Returns diagnostic events from this broker's per-shard ring buffers,
+    // filtered by time range, severity, and subsystem.
+    rpc GetEventLog(GetEventLogRequest) returns (GetEventLogResponse) {
+        option (pbgen.rpc) = {
+            authz: USER
+        };
+    }
+
+    // GetDiagnostics
+    //
+    // Returns a curated snapshot of diagnostically useful metrics for this
+    // broker: resource usage, partition counts, throughput, and latencies.
+    rpc GetDiagnostics(GetDiagnosticsRequest) returns (GetDiagnosticsResponse) {
+        option (pbgen.rpc) = {
+            authz: USER
+        };
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GetEventLog
+// ---------------------------------------------------------------------------
+
+message GetEventLogRequest {
+    // Only return events newer than this many seconds ago.
+    optional int64 since_seconds = 1;
+
+    // Only return events at or above this severity level.
+    optional Severity min_severity = 2;
+
+    // Only return events from this subsystem.
+    optional Subsystem subsystem_filter = 3;
+}
+
+message GetEventLogResponse {
+    repeated DiagnosticEvent events = 1;
+    int32 buffer_capacity = 2;
+    int32 total_events_stored = 3;
+}
+
+// ---------------------------------------------------------------------------
+// GetDiagnostics
+// ---------------------------------------------------------------------------
+
+message GetDiagnosticsRequest {}
+
+message GetDiagnosticsResponse {
+    BrokerDiagnostics broker = 1;
+}
+
+message BrokerDiagnostics {
+    int32 node_id = 1;
+    BrokerStatus status = 2;
+    float cpu_pct = 3;
+    float memory_pct = 4;
+    float disk_usage_pct = 5;
+    float disk_write_latency_p99_ms = 6;
+    float disk_read_latency_p99_ms = 7;
+    int32 partitions = 8;
+    int32 leader_partitions = 9;
+    int32 under_replicated_partitions = 10;
+    int64 produce_throughput_bytes_sec = 11;
+    int64 fetch_throughput_bytes_sec = 12;
+    float rpc_latency_p99_ms = 13;
+    int32 open_connections = 14;
+}
+
+enum BrokerStatus {
+    BROKER_STATUS_UNSPECIFIED = 0;
+    BROKER_STATUS_ACTIVE = 1;
+    BROKER_STATUS_MAINTENANCE = 2;
+    BROKER_STATUS_DECOMMISSIONING = 3;
+    BROKER_STATUS_DOWN = 4;
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostic event types
+// ---------------------------------------------------------------------------
+
+message DiagnosticEvent {
+    int64 timestamp_ns = 1;
+    uint32 shard_id = 2;
+    optional Partition partition = 3;
+    Severity severity = 4;
+    Subsystem subsystem = 5;
+
+    oneof event {
+        LeadershipTransferEvent leadership_transfer = 10;
+        PartitionMoveEvent partition_move = 11;
+        ResourcePressureEvent resource_pressure = 12;
+        NodeLifecycleEvent node_lifecycle = 13;
+        ReplicaSetChangeEvent replica_set_change = 14;
+        ConfigChangeEvent config_change = 15;
+        ErrorEvent error = 20;
+    }
+}
+
+message Partition {
+    string namespace = 1;
+    string topic = 2;
+    int32 id = 3;
+}
+
+enum Severity {
+    SEVERITY_UNSPECIFIED = 0;
+    SEVERITY_INFO = 1;
+    SEVERITY_WARN = 2;
+    SEVERITY_ERROR = 3;
+}
+
+enum Subsystem {
+    SUBSYSTEM_UNSPECIFIED = 0;
+    SUBSYSTEM_RAFT = 1;
+    SUBSYSTEM_PARTITION_MANAGER = 2;
+    SUBSYSTEM_STORAGE = 3;
+    SUBSYSTEM_NODE_LIFECYCLE = 4;
+    SUBSYSTEM_RESOURCE_MONITOR = 5;
+    SUBSYSTEM_CONFIG = 6;
+    SUBSYSTEM_RPC = 7;
+}
+
+// --- Operational events ---
+
+message LeadershipTransferEvent {
+    int32 from_broker = 1;
+    int32 to_broker = 2;
+    LeadershipTransferReason reason = 3;
+}
+
+enum LeadershipTransferReason {
+    LEADERSHIP_TRANSFER_REASON_UNSPECIFIED = 0;
+    LEADERSHIP_TRANSFER_REASON_PREFERENCE = 1;
+    LEADERSHIP_TRANSFER_REASON_NODE_DOWN = 2;
+    LEADERSHIP_TRANSFER_REASON_DECOMMISSION = 3;
+    LEADERSHIP_TRANSFER_REASON_MAINTENANCE = 4;
+    LEADERSHIP_TRANSFER_REASON_MANUAL = 5;
+}
+
+message PartitionMoveEvent {
+    PartitionMovePhase phase = 1;
+    int32 source_broker = 2;
+    int32 target_broker = 3;
+    int64 total_size_bytes = 4;
+    float progress_pct = 5;
+    int64 bytes_moved = 6;
+    PartitionMoveStallReason stall_reason = 7;
+}
+
+enum PartitionMovePhase {
+    PARTITION_MOVE_PHASE_UNSPECIFIED = 0;
+    PARTITION_MOVE_PHASE_START = 1;
+    PARTITION_MOVE_PHASE_PROGRESS = 2;
+    PARTITION_MOVE_PHASE_STALL = 3;
+    PARTITION_MOVE_PHASE_COMPLETE = 4;
+    PARTITION_MOVE_PHASE_CANCEL = 5;
+}
+
+enum PartitionMoveStallReason {
+    PARTITION_MOVE_STALL_REASON_UNSPECIFIED = 0;
+    PARTITION_MOVE_STALL_REASON_TARGET_DISK_FULL = 1;
+    PARTITION_MOVE_STALL_REASON_TARGET_DISK_THROTTLED = 2;
+    PARTITION_MOVE_STALL_REASON_SOURCE_UNAVAILABLE = 3;
+    PARTITION_MOVE_STALL_REASON_NETWORK_SATURATED = 4;
+    PARTITION_MOVE_STALL_REASON_MEMORY_PRESSURE = 5;
+    PARTITION_MOVE_STALL_REASON_CROSS_RACK_BANDWIDTH = 6;
+    PARTITION_MOVE_STALL_REASON_LEARNER_RECOVERY_SLOW = 7;
+}
+
+message ResourcePressureEvent {
+    ResourceType resource = 1;
+    float usage_pct = 2;
+    float threshold_pct = 3;
+    ImpactedSubsystem impacted_subsystem = 4;
+    optional float latency_p99_ms = 5;
+}
+
+enum ResourceType {
+    RESOURCE_TYPE_UNSPECIFIED = 0;
+    RESOURCE_TYPE_DISK = 1;
+    RESOURCE_TYPE_MEMORY = 2;
+    RESOURCE_TYPE_CPU = 3;
+    RESOURCE_TYPE_NETWORK = 4;
+}
+
+enum ImpactedSubsystem {
+    IMPACTED_SUBSYSTEM_UNSPECIFIED = 0;
+    IMPACTED_SUBSYSTEM_LOG_STORAGE = 1;
+    IMPACTED_SUBSYSTEM_RAFT_RECOVERY = 2;
+    IMPACTED_SUBSYSTEM_COMPACTION = 3;
+    IMPACTED_SUBSYSTEM_FETCH = 4;
+    IMPACTED_SUBSYSTEM_PRODUCE = 5;
+    IMPACTED_SUBSYSTEM_TIERED_STORAGE = 6;
+}
+
+message NodeLifecycleEvent {
+    int32 broker_id = 1;
+    NodeLifecyclePhase phase = 2;
+    NodeLifecycleReason reason = 3;
+}
+
+enum NodeLifecyclePhase {
+    NODE_LIFECYCLE_PHASE_UNSPECIFIED = 0;
+    NODE_LIFECYCLE_PHASE_JOIN = 1;
+    NODE_LIFECYCLE_PHASE_DECOMMISSION_START = 2;
+    NODE_LIFECYCLE_PHASE_DECOMMISSION_COMPLETE = 3;
+    NODE_LIFECYCLE_PHASE_MAINTENANCE_ENTER = 4;
+    NODE_LIFECYCLE_PHASE_MAINTENANCE_EXIT = 5;
+    NODE_LIFECYCLE_PHASE_DOWN_DETECTED = 6;
+    NODE_LIFECYCLE_PHASE_RECOVERY = 7;
+}
+
+enum NodeLifecycleReason {
+    NODE_LIFECYCLE_REASON_UNSPECIFIED = 0;
+    NODE_LIFECYCLE_REASON_OPERATOR_INITIATED = 1;
+    NODE_LIFECYCLE_REASON_HEALTH_CHECK_FAILURE = 2;
+    NODE_LIFECYCLE_REASON_RPC_TIMEOUT = 3;
+    NODE_LIFECYCLE_REASON_UPGRADE = 4;
+    NODE_LIFECYCLE_REASON_SCALING = 5;
+}
+
+message ReplicaSetChangeEvent {
+    ReplicaSetChangeType type = 1;
+    repeated int32 previous_replicas = 2;
+    repeated int32 current_replicas = 3;
+    ReplicaSetChangeReason reason = 4;
+}
+
+enum ReplicaSetChangeType {
+    REPLICA_SET_CHANGE_TYPE_UNSPECIFIED = 0;
+    REPLICA_SET_CHANGE_TYPE_SHRINK = 1;
+    REPLICA_SET_CHANGE_TYPE_EXPAND = 2;
+    REPLICA_SET_CHANGE_TYPE_RECONFIGURE = 3;
+}
+
+enum ReplicaSetChangeReason {
+    REPLICA_SET_CHANGE_REASON_UNSPECIFIED = 0;
+    REPLICA_SET_CHANGE_REASON_REBALANCE = 1;
+    REPLICA_SET_CHANGE_REASON_DECOMMISSION = 2;
+    REPLICA_SET_CHANGE_REASON_NODE_DOWN = 3;
+    REPLICA_SET_CHANGE_REASON_RACK_CONSTRAINT = 4;
+    REPLICA_SET_CHANGE_REASON_MANUAL = 5;
+}
+
+message ConfigChangeEvent {
+    string key = 1;
+    string old_value = 2;
+    string new_value = 3;
+    ConfigChangeSource source = 4;
+}
+
+enum ConfigChangeSource {
+    CONFIG_CHANGE_SOURCE_UNSPECIFIED = 0;
+    CONFIG_CHANGE_SOURCE_API = 1;
+    CONFIG_CHANGE_SOURCE_STARTUP = 2;
+    CONFIG_CHANGE_SOURCE_DEFAULT_CHANGE = 3;
+}
+
+// --- Error events ---
+
+message ErrorEvent {
+    oneof error {
+        OomEvent oom = 1;
+        SegmentCorruptionEvent segment_corruption = 2;
+        RpcTimeoutCascadeEvent rpc_timeout_cascade = 3;
+        DiskFailureEvent disk_failure = 4;
+        AllocationFailureEvent allocation_failure = 5;
+        RaftRecoveryFailureEvent raft_recovery_failure = 6;
+        GenericError generic = 20;
+    }
+}
+
+message OomEvent {
+    float memory_usage_pct = 1;
+    int64 memory_available_bytes = 2;
+    Subsystem requesting_subsystem = 3;
+}
+
+message SegmentCorruptionEvent {
+    string segment_path = 1;
+    int64 offset = 2;
+}
+
+message RpcTimeoutCascadeEvent {
+    int32 target_broker = 1;
+    int32 timeout_count = 2;
+    float latency_p99_ms = 3;
+}
+
+message DiskFailureEvent {
+    string mount_point = 1;
+    DiskFailureType failure_type = 2;
+}
+
+enum DiskFailureType {
+    DISK_FAILURE_TYPE_UNSPECIFIED = 0;
+    DISK_FAILURE_TYPE_IO_ERROR = 1;
+    DISK_FAILURE_TYPE_READ_ONLY = 2;
+    DISK_FAILURE_TYPE_SPACE_EXHAUSTED = 3;
+}
+
+message AllocationFailureEvent {
+    int32 requested_replicas = 1;
+    int32 available_nodes = 2;
+    AllocationFailureReason reason = 3;
+}
+
+enum AllocationFailureReason {
+    ALLOCATION_FAILURE_REASON_UNSPECIFIED = 0;
+    ALLOCATION_FAILURE_REASON_INSUFFICIENT_NODES = 1;
+    ALLOCATION_FAILURE_REASON_DISK_FULL = 2;
+    ALLOCATION_FAILURE_REASON_RACK_CONSTRAINT = 3;
+}
+
+message RaftRecoveryFailureEvent {
+    int32 target_broker = 1;
+    int64 log_offset_gap = 2;
+}
+
+message GenericError {
+    string message = 1;
+}

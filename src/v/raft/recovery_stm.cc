@@ -11,6 +11,7 @@
 
 #include "base/outcome_future_utils.h"
 #include "bytes/iostream.h"
+#include "diagnostics/event_buffer.h"
 #include "model/fundamental.h"
 #include "model/record_batch_reader.h"
 #include "raft/consensus.h"
@@ -77,6 +78,20 @@ ss::future<> recovery_stm::do_recover() {
         _as.request_abort();
         co_return;
     }
+
+    // Emit recovery start event.
+    diagnostics::emit({
+      .timestamp = diagnostics::diagnostic_event::clock_type::now(),
+      .shard_id = ss::this_shard_id(),
+      .partition = _ptr->ntp(),
+      .severity = diagnostics::severity::info,
+      .subsystem = diagnostics::subsystem::raft,
+      .payload = diagnostics::node_lifecycle_event{
+        .broker_id = _node_id.id(),
+        .phase = diagnostics::node_lifecycle_phase::recovery,
+        .reason = diagnostics::node_lifecycle_reason::unspecified,
+      },
+    });
 
     auto lstats = _ptr->_log->offsets();
 
@@ -312,6 +327,20 @@ recovery_stm::read_range_for_recovery(
                   size,
                   _ptr->_recovery_throttle->get().available(),
                   _ptr->_recovery_throttle->get().waiting_bytes());
+                diagnostics::emit_throttled(
+                  fmt::format("recovery_throttle:{}", _ptr->ntp()),
+                  {.timestamp = diagnostics::diagnostic_event::clock_type::now(),
+                   .shard_id = ss::this_shard_id(),
+                   .partition = _ptr->ntp(),
+                   .severity = diagnostics::severity::warn,
+                   .subsystem = diagnostics::subsystem::raft,
+                   .payload = diagnostics::resource_pressure_event{
+                     .resource = diagnostics::resource_type::network,
+                     .usage_pct = 100.0f,
+                     .threshold_pct = 100.0f,
+                     .impacted = diagnostics::impacted_subsystem::raft_recovery,
+                   }},
+                  std::chrono::minutes(1));
             });
             co_await _ptr->_recovery_throttle->get()
               .throttle(size, _as)
@@ -616,6 +645,20 @@ ss::future<> recovery_stm::replicate(
                 _ctxlog.warn,
                 "recovery append entries error: {}",
                 r.error().message());
+              diagnostics::emit_throttled(
+                fmt::format("recovery_error:{}", _ptr->ntp()),
+                {.timestamp = diagnostics::diagnostic_event::clock_type::now(),
+                 .shard_id = ss::this_shard_id(),
+                 .partition = _ptr->ntp(),
+                 .severity = diagnostics::severity::warn,
+                 .subsystem = diagnostics::subsystem::raft,
+                 .payload = diagnostics::error_event{
+                   .payload = diagnostics::generic_error{
+                     .message = fmt::format(
+                       "recovery append error to node {}: {}",
+                       _node_id.id(),
+                       r.error().message())}}},
+                std::chrono::seconds(30));
               _as.request_abort();
               _ptr->get_probe().recovery_request_error();
           }
@@ -705,6 +748,21 @@ bool recovery_stm::is_recovery_finished() {
 }
 
 ss::future<> recovery_stm::apply() {
+    // Stuck guard: emits if recovery takes >5s without completing.
+    diagnostics::stuck_guard recovery_stuck(std::chrono::seconds(5), [this] {
+        return diagnostics::diagnostic_event{
+            .timestamp = diagnostics::diagnostic_event::clock_type::now(),
+            .shard_id = ss::this_shard_id(),
+            .partition = _ptr->ntp(),
+            .severity = diagnostics::severity::warn,
+            .subsystem = diagnostics::subsystem::raft,
+            .payload = diagnostics::error_event{
+              .payload = diagnostics::generic_error{
+                .message = fmt::format(
+                  "recovery stuck >5min for node {}", _node_id.id())}},
+          };
+    });
+
     auto raft_abort_sub = ssx::subscribe_or_trigger(
       _ptr->_as, [this] mutable noexcept { _as.request_abort(); });
     auto abort_on_leadership_change_f
@@ -724,6 +782,18 @@ ss::future<> recovery_stm::apply() {
           })
           .finally([this] {
               vlog(_ctxlog.trace, "Finished recovery");
+              diagnostics::emit({
+                .timestamp = diagnostics::diagnostic_event::clock_type::now(),
+                .shard_id = ss::this_shard_id(),
+                .partition = _ptr->ntp(),
+                .severity = diagnostics::severity::info,
+                .subsystem = diagnostics::subsystem::raft,
+                .payload = diagnostics::partition_move_event{
+                  .phase = diagnostics::partition_move_phase::complete,
+                  .source_broker = _ptr->self().id(),
+                  .target_broker = _node_id.id(),
+                },
+              });
               _as.request_abort();
               auto meta = get_follower_meta();
               if (meta) {

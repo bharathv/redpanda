@@ -10,6 +10,7 @@
 #include "raft/vote_stm.h"
 
 #include "base/vassert.h"
+#include "diagnostics/event_buffer.h"
 #include "raft/consensus.h"
 #include "raft/errc.h"
 #include "raft/fundamental.h"
@@ -258,6 +259,19 @@ ss::future<> vote_stm::process_replies() {
                   "up to date than the current candidate",
                   _prevote,
                   is_more_up_to_date_it->first);
+                if (!_prevote) {
+                    diagnostics::emit_throttled(
+                      fmt::format("election_fail:{}", _ptr->ntp()),
+                      {.timestamp
+                       = diagnostics::diagnostic_event::clock_type::now(),
+                       .shard_id = ss::this_shard_id(),
+                       .partition = _ptr->ntp(),
+                       .severity = diagnostics::severity::warn,
+                       .subsystem = diagnostics::subsystem::raft,
+                       .payload = diagnostics::
+                         error_event{.payload = diagnostics::generic_error{.message = ss::sstring("election failed: node has longer log")}}},
+                      std::chrono::seconds(30));
+                }
                 _success = false;
                 return ss::make_ready_future<ss::stop_iteration>(
                   ss::stop_iteration::yes);
@@ -426,6 +440,18 @@ ss::future<> vote_stm::update_vote_state(ssx::semaphore_units u) {
     // Set last heartbeat timestamp to max as we are the leader
     _ptr->_hbeat = clock_type::time_point::max();
     vlog(_ctxlog.info, "becoming the leader term:{}", term);
+    diagnostics::emit({
+      .timestamp = diagnostics::diagnostic_event::clock_type::now(),
+      .shard_id = ss::this_shard_id(),
+      .partition = _ptr->ntp(),
+      .severity = diagnostics::severity::info,
+      .subsystem = diagnostics::subsystem::raft,
+      .payload = diagnostics::leadership_transfer_event{
+        .from_broker = model::node_id{-1},
+        .to_broker = _ptr->self().id(),
+        .reason = diagnostics::leadership_transfer_reason::preference,
+      },
+    });
     _ptr->_last_quorum_replicated_index_with_flush = _ptr->_flushed_offset;
 
     auto ec = co_await replicate_config_as_new_leader(std::move(u));

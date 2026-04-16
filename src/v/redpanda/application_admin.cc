@@ -14,6 +14,7 @@
 #include "redpanda/admin/server.h"
 #include "redpanda/admin/services/cluster.h"
 #include "redpanda/admin/services/datalake/datalake.h"
+#include "redpanda/admin/services/diagnostics.h"
 #include "redpanda/admin/services/internal/breakglass.h"
 #include "redpanda/admin/services/internal/debug.h"
 #include "redpanda/admin/services/internal/level_zero.h"
@@ -127,6 +128,9 @@ void application::configure_admin_server(model::node_id node_id) {
               controller.get(),
               _kafka_server.ref(),
               std::ref(metadata_cache)));
+          s.add_service(
+            std::make_unique<admin::diagnostics_service_impl>(
+              _diagnostic_event_buffer));
       })
       .get();
 }

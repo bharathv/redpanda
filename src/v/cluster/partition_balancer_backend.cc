@@ -23,6 +23,7 @@
 #include "cluster/types.h"
 #include "config/configuration.h"
 #include "config/property.h"
+#include "diagnostics/event_buffer.h"
 #include "features/enterprise_feature_messages.h"
 #include "features/enterprise_features.h"
 #include "features/feature_table.h"
@@ -196,6 +197,24 @@ void partition_balancer_backend::on_members_update(
         return;
     }
 
+    // Manage decommission stuck guards.
+    if (state == model::membership_state::active) {
+        _decommission_guards.erase(id);
+    }
+    if (state == model::membership_state::draining) {
+        _decommission_guards[id] = std::make_unique<
+          diagnostics::stuck_guard>(std::chrono::seconds(5), [id] {
+            return diagnostics::diagnostic_event{
+              .timestamp = diagnostics::diagnostic_event::clock_type::now(),
+              .shard_id = ss::this_shard_id(),
+              .severity = diagnostics::severity::warn,
+              .subsystem = diagnostics::subsystem::node_lifecycle,
+              .payload = diagnostics::
+                error_event{.payload = diagnostics::generic_error{.message = fmt::format("decommission of node {} stalled", id)}},
+            };
+        });
+    }
+
     if (
       state == model::membership_state::active
       || state == model::membership_state::draining) {
@@ -317,6 +336,14 @@ ss::future<> partition_balancer_backend::tick() {
         co_await do_tick();
     } catch (const balancer_tick_aborted_exception& e) {
         vlog(clusterlog.info, "tick aborted, reason: {}", e.what());
+        diagnostics::emit({
+          .timestamp = diagnostics::diagnostic_event::clock_type::now(),
+          .shard_id = ss::this_shard_id(),
+          .severity = diagnostics::severity::info,
+          .subsystem = diagnostics::subsystem::partition_manager,
+          .payload = diagnostics::
+            error_event{.payload = diagnostics::generic_error{.message = fmt::format("balancer tick aborted: {}", e.what())}},
+        });
     } catch (const topic_table::concurrent_modification_error& e) {
         vlog(
           clusterlog.debug,
@@ -494,6 +521,29 @@ ss::future<> partition_balancer_backend::do_tick() {
           plan_data.failed_actions_count,
           plan_data.counts_rebalancing_finished,
           _cur_term->_force_health_report_refresh);
+
+        auto sev = plan_data.failed_actions_count > 0
+                     ? diagnostics::severity::warn
+                     : diagnostics::severity::info;
+        diagnostics::emit({
+          .timestamp = diagnostics::diagnostic_event::clock_type::now(),
+          .shard_id = ss::this_shard_id(),
+          .severity = sev,
+          .subsystem = diagnostics::subsystem::partition_manager,
+          .payload = diagnostics::error_event{
+            .payload = diagnostics::generic_error{
+              .message = fmt::format(
+                "balancer: status={}, unavailable_nodes={}, full_nodes={}, "
+                "reassignments={}, cancellations={}, failed={}, "
+                "in_progress={}",
+                _cur_term->last_status,
+                _cur_term->last_violations.unavailable_nodes.size(),
+                _cur_term->last_violations.full_nodes.size(),
+                plan_data.reassignments.size(),
+                plan_data.cancellations.size(),
+                plan_data.failed_actions_count,
+                _state.topics().updates_in_progress().size())}},
+        });
     }
 
     auto moves_before = _state.topics().updates_in_progress().size();
@@ -589,6 +639,17 @@ ss::future<> partition_balancer_backend::do_tick() {
           clusterlog.info,
           "submitting decommission on unresponsive node: {}",
           node_to_decom);
+        diagnostics::emit({
+          .timestamp = diagnostics::diagnostic_event::clock_type::now(),
+          .shard_id = ss::this_shard_id(),
+          .severity = diagnostics::severity::warn,
+          .subsystem = diagnostics::subsystem::node_lifecycle,
+          .payload = diagnostics::node_lifecycle_event{
+            .broker_id = node_to_decom,
+            .phase = diagnostics::node_lifecycle_phase::decommission_start,
+            .reason = diagnostics::node_lifecycle_reason::health_check_failure,
+          },
+        });
 
         auto decom_error = co_await _members_frontend.decommission_node(
           node_to_decom);

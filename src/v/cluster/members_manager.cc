@@ -24,6 +24,7 @@
 #include "cluster/scheduling/partition_allocator.h"
 #include "cluster/types.h"
 #include "config/configuration.h"
+#include "diagnostics/event_buffer.h"
 #include "features/feature_table.h"
 #include "model/metadata.h"
 #include "raft/consensus_utils.h"
@@ -304,6 +305,17 @@ members_manager::apply_update(model::record_batch b) {
                     };
                     _in_progress_updates[id] = update;
                     f = _update_queue.push_eventually(std::move(update));
+                    diagnostics::emit({
+                      .timestamp = diagnostics::diagnostic_event::clock_type::now(),
+                      .shard_id = ss::this_shard_id(),
+                      .severity = diagnostics::severity::info,
+                      .subsystem = diagnostics::subsystem::node_lifecycle,
+                      .payload = diagnostics::node_lifecycle_event{
+                        .broker_id = id,
+                        .phase = diagnostics::node_lifecycle_phase::decommission_start,
+                        .reason = diagnostics::node_lifecycle_reason::operator_initiated,
+                      },
+                    });
                 }
                 return f.then([error] { return error; });
             });
@@ -315,6 +327,17 @@ members_manager::apply_update(model::record_batch b) {
             "applying recommission_node_cmd, offset: {}, node id: {}",
             update_offset,
             id);
+          diagnostics::emit({
+            .timestamp = diagnostics::diagnostic_event::clock_type::now(),
+            .shard_id = ss::this_shard_id(),
+            .severity = diagnostics::severity::info,
+            .subsystem = diagnostics::subsystem::node_lifecycle,
+            .payload = diagnostics::node_lifecycle_event{
+              .broker_id = id,
+              .phase = diagnostics::node_lifecycle_phase::recovery,
+              .reason = diagnostics::node_lifecycle_reason::operator_initiated,
+            },
+          });
 
           // TODO: remove this part after we introduce simplified raft
           // configuration handling as this will be commands driven
@@ -374,6 +397,17 @@ members_manager::apply_update(model::record_batch b) {
             "applying finish_reallocations_cmd, offset: {}, node id: {}",
             update_offset,
             id);
+          diagnostics::emit({
+            .timestamp = diagnostics::diagnostic_event::clock_type::now(),
+            .shard_id = ss::this_shard_id(),
+            .severity = diagnostics::severity::info,
+            .subsystem = diagnostics::subsystem::node_lifecycle,
+            .payload = diagnostics::node_lifecycle_event{
+              .broker_id = id,
+              .phase = diagnostics::node_lifecycle_phase::decommission_complete,
+              .reason = diagnostics::node_lifecycle_reason::operator_initiated,
+            },
+          });
 
           if (
             auto it = _in_progress_updates.find(id);
@@ -422,6 +456,19 @@ members_manager::apply_update(model::record_batch b) {
                     } else {
                         f = _drain_manager.local().restore();
                     }
+                    diagnostics::emit({
+                      .timestamp = diagnostics::diagnostic_event::clock_type::now(),
+                      .shard_id = ss::this_shard_id(),
+                      .severity = diagnostics::severity::info,
+                      .subsystem = diagnostics::subsystem::node_lifecycle,
+                      .payload = diagnostics::node_lifecycle_event{
+                        .broker_id = cmd.key,
+                        .phase = cmd.value
+                          ? diagnostics::node_lifecycle_phase::maintenance_enter
+                          : diagnostics::node_lifecycle_phase::maintenance_exit,
+                        .reason = diagnostics::node_lifecycle_reason::operator_initiated,
+                      },
+                    });
                 }
                 return f.then([error] { return error; });
             });
@@ -432,6 +479,17 @@ members_manager::apply_update(model::record_batch b) {
             "applying node add command - broker: {}, offset: {}",
             cmd.value,
             update_offset);
+          diagnostics::emit({
+            .timestamp = diagnostics::diagnostic_event::clock_type::now(),
+            .shard_id = ss::this_shard_id(),
+            .severity = diagnostics::severity::info,
+            .subsystem = diagnostics::subsystem::node_lifecycle,
+            .payload = diagnostics::node_lifecycle_event{
+              .broker_id = cmd.value.id(),
+              .phase = diagnostics::node_lifecycle_phase::join,
+              .reason = diagnostics::node_lifecycle_reason::operator_initiated,
+            },
+          });
           _first_node_operation_command_offset = std::min(
             update_offset, _first_node_operation_command_offset);
           return do_apply_add_node(std::move(cmd), update_offset);

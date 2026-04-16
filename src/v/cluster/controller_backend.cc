@@ -31,6 +31,7 @@
 #include "cluster/types.h"
 #include "config/configuration.h"
 #include "config/node_config.h"
+#include "diagnostics/event_buffer.h"
 #include "features/feature_table.h"
 #include "metrics/prometheus_sanitize.h"
 #include "model/fundamental.h"
@@ -54,6 +55,7 @@
 #include <seastar/util/later.hh>
 #include <seastar/util/variant_utils.hh>
 
+#include <fmt/format.h>
 #include <fmt/ranges.h>
 
 #include <algorithm>
@@ -1345,6 +1347,18 @@ controller_backend::reconcile_partition_reconfiguration(
             if (ec) {
                 co_return ec;
             } else {
+                diagnostics::emit({
+                  .timestamp = diagnostics::diagnostic_event::clock_type::now(),
+                  .shard_id = ss::this_shard_id(),
+                  .partition = partition->ntp(),
+                  .severity = diagnostics::severity::info,
+                  .subsystem = diagnostics::subsystem::partition_manager,
+                  .payload = diagnostics::partition_move_event{
+                    .phase = diagnostics::partition_move_phase::complete,
+                    .source_broker = _self,
+                    .target_broker = _self,
+                  },
+                });
                 co_return ss::stop_iteration::yes;
             }
         }
@@ -1355,12 +1369,51 @@ controller_backend::reconcile_partition_reconfiguration(
     if (partition->get_revision_id() == cmd_revision) {
         // Requested raft configuration update has already been dispatched.
         // Just wait for recovery to finish.
+        auto ntp_str = fmt::format("{}", partition->ntp());
+        diagnostics::emit_throttled(
+          ntp_str,
+          {
+            .timestamp = diagnostics::diagnostic_event::clock_type::now(),
+            .shard_id = ss::this_shard_id(),
+            .partition = partition->ntp(),
+            .severity = diagnostics::severity::warn,
+            .subsystem = diagnostics::subsystem::partition_manager,
+            .payload = diagnostics::partition_move_event{
+              .phase = diagnostics::partition_move_phase::stall,
+              .source_broker = _self,
+              .target_broker = update.get_target_replicas().empty()
+                ? _self
+                : update.get_target_replicas().front().node_id,
+              .stall_reason
+              = diagnostics::partition_move_stall_reason::learner_recovery_slow,
+            },
+          },
+          std::chrono::seconds(5));
         co_return errc::waiting_for_recovery;
     }
 
     // We need to dispatch the requested raft configuration update.
+
+    auto emit_move_event = [&](diagnostics::partition_move_phase phase) {
+        diagnostics::emit({
+            .timestamp = diagnostics::diagnostic_event::clock_type::now(),
+            .shard_id = ss::this_shard_id(),
+            .partition = partition->ntp(),
+            .severity = diagnostics::severity::info,
+            .subsystem = diagnostics::subsystem::partition_manager,
+            .payload = diagnostics::partition_move_event{
+              .phase = phase,
+              .source_broker = _self,
+              .target_broker = update.get_target_replicas().empty()
+                ? _self
+                : update.get_target_replicas().front().node_id,
+            },
+          });
+    };
+
     switch (update.get_state()) {
     case reconfiguration_state::in_progress:
+        emit_move_event(diagnostics::partition_move_phase::start);
         co_return co_await update_partition_replica_set(
           std::move(partition),
           update.get_target_replicas(),
@@ -1368,6 +1421,7 @@ controller_backend::reconcile_partition_reconfiguration(
           cmd_revision,
           update.get_reconfiguration_policy());
     case reconfiguration_state::force_update:
+        emit_move_event(diagnostics::partition_move_phase::start);
         co_return co_await force_replica_set_update(
           std::move(partition),
           update.get_previous_replicas(),
@@ -1375,6 +1429,7 @@ controller_backend::reconcile_partition_reconfiguration(
           replicas_revisions,
           cmd_revision);
     case reconfiguration_state::cancelled:
+        emit_move_event(diagnostics::partition_move_phase::cancel);
         co_return co_await cancel_replica_set_update(
           std::move(partition),
           update.get_previous_replicas(),
@@ -1382,6 +1437,7 @@ controller_backend::reconcile_partition_reconfiguration(
           update.get_target_replicas(),
           cmd_revision);
     case reconfiguration_state::force_cancelled:
+        emit_move_event(diagnostics::partition_move_phase::cancel);
         co_return co_await force_abort_replica_set_update(
           std::move(partition),
           update.get_previous_replicas(),

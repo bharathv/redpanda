@@ -13,6 +13,7 @@
 
 #include "base/vlog.h"
 #include "crash_tracker/recorder.h"
+#include "diagnostics/event_buffer.h"
 #include "resource_mgmt/available_memory.h"
 #include "ssx/future-util.h"
 #include "ssx/sformat.h"
@@ -205,6 +206,28 @@ void memory_sampling::start_low_available_memory_logging() {
             diagnostics_header(),
             fmt::join(
               allocation_sites.begin(), allocation_sites.begin() + top_n, "|"));
+
+          auto total_mem = seastar::memory::stats().total_memory();
+          auto usage_pct = total_mem > 0
+                             ? static_cast<float>(
+                                 total_mem - current_low_water_mark)
+                                 / static_cast<float>(total_mem) * 100.0f
+                             : 0.0f;
+          diagnostics::emit({
+            .timestamp = diagnostics::diagnostic_event::clock_type::now(),
+            .shard_id = ss::this_shard_id(),
+            .severity = next_log_limit == second_log_limit
+              ? diagnostics::severity::error
+              : diagnostics::severity::warn,
+            .subsystem = diagnostics::subsystem::resource_monitor,
+            .payload = diagnostics::resource_pressure_event{
+              .resource = diagnostics::resource_type::memory,
+              .usage_pct = usage_pct,
+              .threshold_pct = (1.0f - static_cast<float>(next_log_limit)
+                / static_cast<float>(total_mem)) * 100.0f,
+              .impacted = diagnostics::impacted_subsystem::unspecified,
+            },
+          });
 
           if (next_log_limit == first_log_limit) {
               next_log_limit = second_log_limit;

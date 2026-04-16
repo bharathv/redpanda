@@ -16,6 +16,7 @@
 #include "cluster/node/local_monitor.h"
 #include "cluster/partition_manager.h"
 #include "datalake/datalake_manager.h"
+#include "diagnostics/event_buffer.h"
 #include "metrics/prometheus_sanitize.h"
 #include "utils/human.h"
 
@@ -641,6 +642,24 @@ ss::future<> disk_space_manager::manage_data_disk(uint64_t target_size) {
           human::bytes(usage.reclaim.retention),
           human::bytes(adjusted_target_excess - usage.reclaim.retention),
           human::bytes(usage.reclaim.available));
+
+        auto usage_pct = target_size > 0
+                           ? static_cast<float>(usage.usage.total())
+                               / static_cast<float>(target_size) * 100.0f
+                           : 0.0f;
+        diagnostics::emit({
+          .timestamp = diagnostics::diagnostic_event::clock_type::now(),
+          .shard_id = ss::this_shard_id(),
+          .severity = usage_pct > 95.0f ? diagnostics::severity::error
+                                        : diagnostics::severity::warn,
+          .subsystem = diagnostics::subsystem::storage,
+          .payload = diagnostics::resource_pressure_event{
+            .resource = diagnostics::resource_type::disk,
+            .usage_pct = usage_pct,
+            .threshold_pct = 100.0f,
+            .impacted = diagnostics::impacted_subsystem::log_storage,
+          },
+        });
 
         if (schedule.sched_size > 0) {
             auto estimate = _policy.evict_until_local_retention(

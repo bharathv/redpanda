@@ -36,6 +36,7 @@
 #include "datalake/coordinator/state_machine.h"
 #include "datalake/translation/state_machine.h"
 #include "debug_bundle/debug_bundle_service.h"
+#include "diagnostics/event_buffer.h"
 #include "kafka/server/group_manager.h"
 #include "kafka/server/group_tx_tracker_stm.h"
 #include "kafka/server/quota_manager.h"
@@ -231,6 +232,8 @@ void application::start_runtime_services(
     }
 
     _debug_bundle_service.invoke_on_all(&debug_bundle::service::start).get();
+    _diagnostic_event_buffer.invoke_on_all(&diagnostics::event_buffer::start)
+      .get();
 
     if (!config::node().admin().empty()) {
         _kafka_connections_service

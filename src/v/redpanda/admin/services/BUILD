@@ -48,6 +48,18 @@ redpanda_cc_library(
 )
 
 redpanda_cc_library(
+    name = "diagnostics",
+    srcs = ["diagnostics.cc"],
+    hdrs = ["diagnostics.h"],
+    deps = [
+        "//proto/redpanda/core/admin/v2:diagnostics_redpanda_proto",
+        "//src/v/diagnostics:event_buffer",
+        "//src/v/serde/protobuf:rpc",
+        "@seastar",
+    ],
+)
+
+redpanda_cc_library(
     name = "security",
     srcs = ["security.cc"],
     hdrs = ["security.h"],

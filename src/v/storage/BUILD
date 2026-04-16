@@ -352,6 +352,7 @@ redpanda_cc_library(
         "//src/v/container:chunked_hash_map",
         "//src/v/container:chunked_vector",
         "//src/v/container:intrusive",
+        "//src/v/diagnostics:event_buffer",
         "//src/v/features",
         "//src/v/finjector",
         "//src/v/hashing:crc32c",

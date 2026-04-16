@@ -12,6 +12,7 @@
 #include "base/vassert.h"
 #include "base/vlog.h"
 #include "bytes/iobuf.h"
+#include "diagnostics/event_buffer.h"
 #include "model/batch_compression.h"
 #include "model/batch_utils.h"
 #include "model/fundamental.h"
@@ -429,6 +430,18 @@ log_reader::do_load_slice(model::timeout_clock::time_point timeout) {
 
                 if (batch_parse_err) {
                     _probe.batch_parse_error();
+                    diagnostics::emit({
+                      .timestamp = diagnostics::diagnostic_event::clock_type::now(),
+                      .shard_id = ss::this_shard_id(),
+                      .severity = diagnostics::severity::error,
+                      .subsystem = diagnostics::subsystem::storage,
+                      .payload = diagnostics::error_event{
+                        .payload = diagnostics::segment_corruption_event{
+                          .segment_path = ss::sstring("unknown"),
+                          .offset = _config.start_offset(),
+                        },
+                      },
+                    });
                 }
                 co_await _iterator.close();
                 co_return log_reader::storage_t{};

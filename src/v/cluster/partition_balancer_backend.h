@@ -16,6 +16,7 @@
 #include "cluster/partition_balancer_types.h"
 #include "cluster/types.h"
 #include "config/property.h"
+#include "diagnostics/event_buffer.h"
 #include "features/enterprise_features.h"
 #include "model/fundamental.h"
 #include "raft/consensus.h"
@@ -123,6 +124,12 @@ private:
     ssx::mutex _lock{"partition_balancer_backend::lock"};
     ss::gate _gate;
     ssx::tail_minimum_interval_timer _timer;
+
+    // Stuck guards for decommissioning nodes. unique_ptr because the
+    // intrusive list hook requires a stable address after registration.
+    absl::
+      flat_hash_map<model::node_id, std::unique_ptr<diagnostics::stuck_guard>>
+        _decommission_guards;
     notification_id_type _topic_table_updates;
     notification_id_type _member_updates;
     notification_id_type _health_monitor_updates;

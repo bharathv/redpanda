@@ -14,6 +14,7 @@
 #include "bytes/iostream.h"
 #include "config/configuration.h"
 #include "config/property.h"
+#include "diagnostics/event_buffer.h"
 #include "metrics/prometheus_sanitize.h"
 #include "model/fundamental.h"
 #include "model/metadata.h"
@@ -225,6 +226,18 @@ void consensus::do_step_down(std::string_view ctx) {
           ctx,
           _term,
           _log->offsets().dirty_offset);
+        diagnostics::emit({
+          .timestamp = diagnostics::diagnostic_event::clock_type::now(),
+          .shard_id = ss::this_shard_id(),
+          .partition = ntp(),
+          .severity = diagnostics::severity::warn,
+          .subsystem = diagnostics::subsystem::raft,
+          .payload = diagnostics::leadership_transfer_event{
+            .from_broker = _self.id(),
+            .to_broker = model::node_id{-1},
+            .reason = diagnostics::leadership_transfer_reason::node_down,
+          },
+        });
     }
     _fstates.reset();
     _vstate = vote_state::follower;
@@ -601,6 +614,10 @@ void consensus::successfull_append_entries_reply(
     idx.last_dirty_log_index = reply.last_dirty_log_index;
     idx.last_flushed_log_index = reply.last_flushed_log_index;
     idx.match_index = idx.last_dirty_log_index;
+    const auto& ntp = _log->config().ntp();
+    if (ntp.ns == model::kafka_namespace && idx.is_learner) {
+        idx.match_index = model::prev_offset(idx.match_index);
+    }
     idx.next_index = model::next_offset(idx.last_dirty_log_index);
     idx.last_successful_received_seq = idx.last_received_seq;
     /**
@@ -3311,6 +3328,21 @@ void consensus::trigger_leadership_notification() {
     _leader_notification(
       leadership_status{
         .term = _term, .group = _group, .current_leader = _leader_id});
+
+    if (_leader_id) {
+        diagnostics::emit({
+          .timestamp = diagnostics::diagnostic_event::clock_type::now(),
+          .shard_id = ss::this_shard_id(),
+          .partition = ntp(),
+          .severity = diagnostics::severity::info,
+          .subsystem = diagnostics::subsystem::raft,
+          .payload = diagnostics::leadership_transfer_event{
+            .from_broker = _self.id(),
+            .to_broker = _leader_id->id(),
+            .reason = diagnostics::leadership_transfer_reason::preference,
+          },
+        });
+    }
 
     if (_follower_recovery_state && !_leader_id) {
         // If we are recovering and the group has lost leadership, it is unclear

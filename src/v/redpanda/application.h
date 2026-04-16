@@ -33,6 +33,7 @@
 #include "datalake/credential_manager.h"
 #include "datalake/fwd.h"
 #include "debug_bundle/fwd.h"
+#include "diagnostics/fwd.h"
 #include "features/fwd.h"
 #include "finjector/stress_fiber.h"
 #include "kafka/client/configuration.h"
@@ -317,6 +318,7 @@ private:
 
     ss::sharded<resources::cpu_profiler> _cpu_profiler;
     ss::sharded<debug_bundle::service> _debug_bundle_service;
+    ss::sharded<diagnostics::event_buffer> _diagnostic_event_buffer;
 
     std::unique_ptr<cluster::node_isolation_watcher> _node_isolation_watcher;
 

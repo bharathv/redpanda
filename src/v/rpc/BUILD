@@ -48,6 +48,7 @@ redpanda_cc_library(
         "//src/v/compression",
         "//src/v/config",
         "//src/v/container:chunked_hash_map",
+        "//src/v/diagnostics:event_buffer",
         "//src/v/hashing:crc32c",
         "//src/v/hashing:xx",
         "//src/v/metrics",

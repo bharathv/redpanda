@@ -20,6 +20,7 @@
 #include "datalake/credential_manager.h"
 #include "datalake/datalake_manager.h"
 #include "debug_bundle/debug_bundle_service.h"
+#include "diagnostics/event_buffer.h"
 #include "kafka/data/rpc/client.h"
 #include "kafka/server/usage_manager.h"
 #include "pandaproxy/rest/api.h"
@@ -306,6 +307,7 @@ void application::wire_up_runtime_services(
     construct_single_service(_monitor_unsafe, std::ref(feature_table));
 
     construct_service(_debug_bundle_service, &storage.local().kvs()).get();
+    construct_service(_diagnostic_event_buffer).get();
 
     auto data_dir = config::node().data_directory().as_sstring();
     auto cache_dir = ss::sstring(
